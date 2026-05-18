@@ -4,6 +4,40 @@ Observations collected step by step — useful for the written report.
 
 ---
 
+## Syslog Implementation Plan (+1 pt)
+
+### What the spec actually asks for
+> *"for extra points you may incorporate a UEBA report system that sends rsyslog messages/alerts to a SIEM"*
+
+It does **not** ask to set up a SIEM (Wazuh, ELK, Splunk). It asks to **emit alerts in syslog format** so a SIEM *could* receive them. The proof is showing the messages landed in the system log.
+
+### Two options — we chose Option B (real implementation)
+
+**Option A — cosmetic (not chosen):** Format alert strings with the syslog `<priority>timestamp hostname program: message` prefix and print to stdout. Looks like syslog but nothing actually goes to rsyslog.
+
+**Option B — real (chosen):** Use Python's built-in `syslog` module, which writes to `/dev/log` (the Unix socket rsyslog permanently listens on). Messages are received by rsyslog and stored in `/var/log/syslog`. This is how every Linux process logs (sudo, cron, ssh, etc.).
+
+### System state (verified)
+- `rsyslog` service: **active and running**
+- `/dev/log` socket: **exists and ready**
+- UDP port 514: not listening (not needed — we write locally via `/dev/log`)
+
+### Implementation plan
+1. Add `send_syslog_alert(alert, confidence)` function — uses Python `syslog` module, facility `LOG_LOCAL0`, severity `LOG_WARNING` (medium) or `LOG_CRIT` (high)
+2. Message format: structured key=value pairs parseable by any SIEM
+   ```
+   ueba_module[PID]: RULE="HTTPS Data Exfiltration" SRC_IP="192.168.101.187" OBSERVED="7586.3 MB" DEVIATION="316.4" CONFIDENCE="HIGH"
+   ```
+3. Wire into `main()` — after each rule runs, send each alert via syslog in addition to printing
+4. Verify with `sudo grep "ueba_module" /var/log/syslog` — screenshot goes in the report
+
+### What to show in the report
+- The `send_syslog_alert()` function code
+- Output of `grep "ueba_module" /var/log/syslog` showing alerts received
+- One paragraph explaining that in production, rsyslog would be configured to forward `LOCAL0.*` to a SIEM via UDP/514 or TCP/514
+
+---
+
 ## Phase 1 — Baseline Exploration
 
 - Internal clients use **only two protocols**: TCP:443 (HTTPS) and UDP:53 (DNS). No other traffic exists in the dataset.
