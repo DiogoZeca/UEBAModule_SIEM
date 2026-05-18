@@ -91,6 +91,27 @@ Observations collected step by step — useful for the written report.
 
 ---
 
+## Online Research Validation
+
+### Beaconing detection — Coefficient of Variation (CV = std/mean)
+The academic literature recommends CV as the primary beaconing metric because it normalises the std by the mean interval, making devices with different activity levels comparable. CV ≤ 0.2 is cited as a beacon candidate threshold (human traffic naturally has CV >> 1.0 due to bursty browsing patterns).
+
+**Why we did not use CV as a threshold for this dataset:** When computed over a full 24h day, overnight inactive periods produce large interval values that inflate the std and skew the mean, pushing CV up even for devices that beacon regularly. In our data, training CVs range from 3.93 to 25.52 and the flagged beaconing IPs have CVs of 3.7–16.6 — the ranges overlap too much for CV to produce a clean threshold. Our **p05 of interval std** approach avoids this inflation problem and produces cleaner separation. This is a known limitation of the full-day CV approach noted in the literature.
+
+### DNS detection — queries/unique_dst ratio
+The literature identifies "query volume vs name cardinality" as a secondary DNS C2 signal. In our dataset this translates to queries per unique destination IP. All beaconing devices send thousands of queries to exactly 2 DNS servers (the internal resolvers), producing extreme ratios: `.41` = 19,746 queries/server, `.23` = 4,326, down to `.207` = 709. This is **mathematically identical** to our DNS flow count metric divided by 2, so it adds no detection power but is included in alert output as supporting context for the C2-via-internal-relay finding.
+
+### Statistical threshold — 3σ
+Confirmed as the industry standard across all sources. Carries a 0.1% false positive rate per measurement, which is acceptable for a one-day single-dataset evaluation. Adaptive baselining (continuous learning) would be better for production deployment but is out of scope here.
+
+### Geo-based detection — CDN false positives
+CDN rotation explicitly named as the top source of false positives in geo-based SIEM rules across all sources. Our two-tier approach (global network set + per-IP extreme threshold ≥ 10 new countries) is the documented mitigation. Validated.
+
+### HTTPS exfiltration
+"Sudden spikes in outbound data volume" and "client-to-server bytes ratio" are the primary signals across all major frameworks (Elastic, Fidelis, Splunk). Our total upload threshold (mean + 3σ = 116.6 MB) is exactly this. Validated.
+
+---
+
 ## Step 7 — `main()` — Full Consolidated Analysis
 
 ### Nothing was missed

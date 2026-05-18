@@ -283,13 +283,12 @@ def detect_dns_anomalies(baselines: dict) -> list[dict]:
     volume_flagged = dns_count[dns_count > threshold]
 
     for ip, count in volume_flagged.items():
-        # Compute median inter-query interval to expose beaconing pattern
-        intervals = (
-            dns_test[dns_test['src_ip'] == ip]
-            .sort_values('timestamp')['timestamp']
-            .diff().dropna()
-        )
-        train_count = int_train[
+        ip_dns       = dns_test[dns_test['src_ip'] == ip]
+        intervals    = ip_dns.sort_values('timestamp')['timestamp'].diff().dropna()
+        unique_dst   = ip_dns['dst_ip'].nunique()
+        # queries/unique_dst: high value = queries concentrated on few servers = C2 relay pattern
+        queries_per_dst = count / unique_dst
+        train_count  = int_train[
             (int_train['src_ip'] == ip) & (int_train['port'] == 53)
         ].shape[0]
 
@@ -301,7 +300,7 @@ def detect_dns_anomalies(baselines: dict) -> list[dict]:
             'threshold' : f'{threshold:.0f} flows',
             'baseline'  : f'mean={mean:.0f}  std={std:.0f}  train={train_count}',
             'deviation' : round((count - mean) / std, 1),
-            'extra'     : f'median interval={intervals.median():.1f}s  increase={count/max(train_count,1):.1f}x',
+            'extra'     : f'median interval={intervals.median():.1f}s  increase={count/max(train_count,1):.1f}x  queries/dst={queries_per_dst:.0f}',
         })
 
     # ── Sub-rule 2: DNS to public server (zero-threshold rule) ────────────────
