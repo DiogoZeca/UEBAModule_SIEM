@@ -26,7 +26,7 @@ The assigned dataset is in the folder to explore. It contains two distinct popul
 
 # Data Reading & First Observations
 
-## data Loading
+## Data Loading
 The first step was loading the four JSON files and understanding the structure before writing any detection logic. Each file represents one full day of network flows, with 7 fields per record: src_ip, dst_ip, port, timestamp, up_bytes, down_bytes, and protocol.
 
 Code used:
@@ -43,7 +43,7 @@ internal_test  : (1008425, 7)
 external_train : (712488, 7)
 external_test  : (681696, 7)
 ```
-Concluded that the test files are larger than the training files in both cases.
+We concluded that the test files are larger than the training files in both cases.
 
 
 ## Protocols and Ports
@@ -59,7 +59,7 @@ Every anomaly we detect will be either in HTTPS behaviour or DNS behaviour — t
 
 
 ## Internal Network Topology
-Inspecting the data, grouping the internal data by destination IP, three internal servers emerge consistently accross all 198 clients:
+Inspecting the data, grouping the internal data by destination IP, three internal servers emerge consistently across all 198 clients:
 
 | Role | IP | Port |
 |----------|----------|----------|
@@ -67,13 +67,13 @@ Inspecting the data, grouping the internal data by destination IP, three interna
 | DNS Server (secondary)| 192.168.101.229 | 53 |
 | HTTPS Server | 192.168.101.240 | 443 |
 
-Every one of the 198 internal clients communicates with all three servers during training — zero exceptions. This uniformity is itself a baseline: the network behaves like a corporate environment where all machines follow the same configuration. Any device that deviates from this pattern in the test period stands out immediately
+Every one of the 198 internal clients communicates with all three servers during training — zero exceptions. This uniformity is itself a baseline: the network behaves like a corporate environment where all machines follow the same configuration. Any device that deviates from this pattern in the test period stands out immediately.
 
 
 ## DNS Invariant
 The most important single observation in the entire dataset came from inspecting DNS destination IPs. During training, every DNS query from every internal client goes exclusively to .226 or .229 — without a single exception across all 198 clients and 890K rows.
 
-Code Used:
+Code used:
 ```python
 dns = int_train[int_train['port'] == 53]
 internal_servers = set(dns['dst_ip'].unique())
@@ -83,11 +83,11 @@ Output received:
 ```
 Internal DNS servers: {'192.168.101.229', '192.168.101.226'}
 ```
-This shows an Invariation, not tendency. It directly motivates one of the DNS detection sub-rules: any internal client that sends a DNS query to an IP outside this set during the test period is immediately and unconditionally anomalous. No threshold needed, no baseline — just a violation of a rule that held perfectly across the entire training dataset
+This is an invariant, not a tendency. It directly motivates one of the DNS detection sub-rules: any internal client that sends a DNS query to an IP outside this set during the test period is immediately and unconditionally anomalous. No threshold needed, no baseline — just a violation of a rule that held perfectly across the entire training dataset.
 
 
 ## External Clients
-The external dataset contains clients from the 188.83.72.x subnet connecting to a corporate public server over HTTPS only — no DNS traffic exists in the external files. During training, these clients show an remarkably consistent down/up byte ratio across all 196 devices:
+The external dataset contains clients from the 188.83.72.x subnet connecting to a corporate public server over HTTPS only — no DNS traffic exists in the external files. During training, these clients show a remarkably consistent down/up byte ratio across all 196 devices:
 
 | Metric | Value | 
 |----------|----------|
@@ -119,6 +119,7 @@ The gap between median (104s) and mean (807s), and the jump from p90 (191s) to p
 # Baseline Computation
 Before any detection logic runs, compute_baselines() reads both training files and builds a dictionary of statistical profiles that every rule will consume. This function computes per-IP aggregates — total upload, DNS flow counts, inter-flow intervals, destination countries — and derives the thresholds that define "normal" for each detection rule. Nothing is flagged here. The goal is purely to characterise the training period so the test period can be compared against it.
 The function follows a single design principle: compute everything once, return it all as a dictionary. The naive alternative would be to re-read and re-aggregate the training data inside each rule function — but that means scanning ~900k rows five separate times and duplicating the same groupby operations. Instead, compute_baselines() runs exactly once at startup, builds every statistic every rule will ever need, and passes the result as a single dict b. Each rule receives b as its only input and reads from it without modifying it. The function itself has no side effects — it prints nothing, flags nothing, and touches no external state. This makes it independently testable and means that replacing the baseline source (for example, switching from a fixed training file to a rolling 7-day window) requires changing only this one function, with zero impact on any detection logic.
+
 ### Code Implementation
 ```python
 # HTTPS: group port-443 flows per client, compute PCR per IP
@@ -144,12 +145,13 @@ HTTPS upload threshold:  116.6 MB   (mean+3σ)
 HTTPS PCR threshold:     -0.7918    (mean=-0.8046  std=0.0043)
 DNS flow threshold:      1399 flows (mean+3σ)
 BotNet interval p05:     1741.9
-External ration window:  [8.3817, 8.6226]
+External ratio window:   [8.3817, 8.6226]
 ```
 Each threshold targets a different dimension of behaviour. 
 - The HTTPS upload threshold (116.6 MB) defines the maximum total data a normal internal client sends over HTTPS in a day — anything above this suggests bulk data exfiltration. 
 - The HTTPS PCR threshold (−0.7918) measures the upload/download balance: PCR (Producer-Consumer Ratio) is defined as (up_bytes − down_bytes) / (up_bytes + down_bytes) and ranges from −1 (pure download) to +1 (pure upload). A normal HTTPS session is download-dominant — the server returns HTML, images, files — so the training mean sits at −0.8046. A device that uploads far more than it downloads pushes PCR toward 0 or positive, which is the fingerprint of data exfiltration even when the total volume is still low. 
-- The DNS flow count threshold (1,399 flows) flags clients generating an abnormal number of DNS queries — the primary signal for DNS-based C&C beaconing. - The BotNet interval std (1,741.9 s) is a floor: any client whose inter-flow timestamps are more regular than the least regular normal client in training is beaconing at a fixed interval, consistent with malware checking in with a C&C server. 
+- The DNS flow count threshold (1,399 flows) flags clients generating an abnormal number of DNS queries — the primary signal for DNS-based C&C beaconing.
+- The BotNet interval std (1,741.9 s) is a floor: any client whose inter-flow timestamps are more regular than the least regular normal client in training is beaconing at a fixed interval, consistent with malware checking in with a C&C server. 
 - The external ratio window ([8.3817, 8.6226]) defines the expected down/up range for external clients — a symmetric band around the training mean of 8.50. Any external client outside this window is interacting with the corporate server in an anomalous way.
 
 
@@ -214,7 +216,7 @@ The rule flagged 5 external IPs, which naturally split into two distinct behavio
 [ALERT] 188.83.72.182  ratio=8.661  deviation=4.0σ
 [ALERT] 188.83.72.210  ratio=8.644  deviation=3.5σ
 ```
-The results showed us to groups: 
+The results revealed two groups: 
 - The first group — .61, .64, .174 — sit below the lower bound. Their ratio is lower than normal, meaning they upload proportionally more than a legitimate client would. This is consistent with a compromised account being used to push data toward the corporate server, or with reversed exfiltration where data is staged on the server from outside. 
 - The second group — .182, .210 — sit above the upper bound, downloading more than expected relative to what they upload, consistent with bulk data retrieval or unusual large-object access. These are two different threat models, but the same symmetric rule catches both because both break the tight ratio invariant in opposite directions.
 
@@ -268,7 +270,7 @@ The result was immediate and catastrophic: 163 of 198 clients flagged, an 82% fa
 A naive per-IP new-country rule is completely blind to this and produces noise, not signal.
 ### Code Implementation
 To solve the false positive problem, we replaced the naive approach with a two-tier detection strategy:
-- Tier 1 (global): flag any client reaching a country that no client in the entire network contacted during training. There are 26 such countries. Any access to these is immediately anomalous at the network level — not just new to the individual device, but new to the whole organisation
+- Tier 1 (global): flag any client reaching a country that no client in the entire network contacted during training. Any access to these is immediately anomalous at the network level — not just new to the individual device, but new to the whole organisation.
 - Tier 2 (per-IP): flag clients that contact 10 or more new-to-them countries in the test period. CDN rotation typically adds 1–3 new countries per day naturally. A device reaching 10+ new countries is not experiencing CDN noise — it is actively communicating with fundamentally new infrastructure.
 ```python
 new_to_network = test_countries - global_train_countries  # Tier 1
@@ -310,7 +312,7 @@ Before presenting the results, it is important to distinguish between two differ
 
 | Aspect | C&C Beaconing | DNS Exfiltration |
 |----------|----------|----------|
-| Pattern | Fixes periodic intervals | Bursty, aperiodic |
+| Pattern | Fixed periodic intervals | Bursty, aperiodic |
 | Query content | Short, normal-looking | Long high-entropy subdomains |
 | Volume | Extreme query count | Moderate count, large payload |
 | Interval | Exact, clock-driven | Irregular |
@@ -423,7 +425,7 @@ The 7 HIGH confidence devices are those flagged by two or more completely indepe
 |----------|-----------------|----------------|
 | 192.168.101.41 | DNS Volume + BotNet | 39,493 DNS queries at an exact 5.0 s interval — extreme C2 beaconing via internal DNS relay, confirmed by both volume and timing |
 | 192.168.101.23 | DNS Volume + BotNet | 8,651 DNS queries at 5.0 s — same C2 pattern, smaller scale, same malware family |
-| 192.168.101.201 | DNS Volume + BotNet | DNS beaconing at 5.0 s plus HTTPS activity at ~103 s — dual-channel implant using both protocol |
+| 192.168.101.201 | DNS Volume + BotNet | DNS beaconing at 5.0 s plus HTTPS activity at ~103 s — dual-channel implant using both protocols |
 | 192.168.101.207 | HTTPS Exfiltration + DNS Anomalies | 119 MB uploaded over HTTPS while simultaneously generating 1,418 DNS queries — active exfiltration running alongside a DNS beacon |
 | 192.168.101.72 | New Geo + BotNet | Contacted 30 new countries including RU, IR, UA while maintaining a regular ~102 s HTTPS beacon — C2 communication combined with broad new infrastructure reach |
 | 192.168.101.117 | HTTPS PCR + BotNet | Only 1.2 MB uploaded but PCR = −0.783 — low-and-slow exfiltration with an HTTPS beacon at 100 s intervals, the most covert device in the dataset |
