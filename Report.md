@@ -380,29 +380,29 @@ Running the full detection pipeline against the test dataset produced 27 unique 
   [HIGH  ] 192.168.101.188  →  detect_https_exfiltration | detect_botnet_beaconing
   [HIGH  ] 192.168.101.201  →  detect_dns_anomalies | detect_botnet_beaconing
   [HIGH  ] 192.168.101.207  →  detect_https_exfiltration | detect_dns_anomalies
-  [HIGH  ] 192.168.101.23  →  detect_dns_anomalies | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.41  →  detect_dns_anomalies | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.72  →  detect_new_geo_destinations | detect_botnet_beaconing
-  [MEDIUM] 188.83.72.174  →  detect_external_anomalies
-  [MEDIUM] 188.83.72.182  →  detect_external_anomalies
-  [MEDIUM] 188.83.72.210  →  detect_external_anomalies
-  [MEDIUM] 188.83.72.61  →  detect_external_anomalies
-  [MEDIUM] 188.83.72.64  →  detect_external_anomalies
-  [MEDIUM] 192.168.101.11  →  detect_new_geo_destinations
+  [HIGH  ] 192.168.101.23   →  detect_dns_anomalies | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.41   →  detect_dns_anomalies | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.72   →  detect_new_geo_destinations | detect_botnet_beaconing
+  [MEDIUM] 188.83.72.174    →  detect_external_anomalies
+  [MEDIUM] 188.83.72.182    →  detect_external_anomalies
+  [MEDIUM] 188.83.72.210    →  detect_external_anomalies
+  [MEDIUM] 188.83.72.61     →  detect_external_anomalies
+  [MEDIUM] 188.83.72.64     →  detect_external_anomalies
+  [MEDIUM] 192.168.101.11   →  detect_new_geo_destinations
   [MEDIUM] 192.168.101.125  →  detect_new_geo_destinations
   [MEDIUM] 192.168.101.128  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.14  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.14   →  detect_https_exfiltration
   [MEDIUM] 192.168.101.148  →  detect_dns_anomalies
   [MEDIUM] 192.168.101.160  →  detect_botnet_beaconing
   [MEDIUM] 192.168.101.167  →  detect_new_geo_destinations
   [MEDIUM] 192.168.101.187  →  detect_https_exfiltration
   [MEDIUM] 192.168.101.197  →  detect_https_exfiltration
   [MEDIUM] 192.168.101.208  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.26  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.32  →  detect_botnet_beaconing
-  [MEDIUM] 192.168.101.36  →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.78  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.93  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.26   →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.32   →  detect_botnet_beaconing
+  [MEDIUM] 192.168.101.36   →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.78   →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.93   →  detect_new_geo_destinations
 ```
 
 ## False Negative Check
