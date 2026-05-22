@@ -1,0 +1,405 @@
+[*] Loading datasets...
+    internal_train : (890749, 7)
+    internal_test  : (1008425, 7)
+    external_train : (712488, 7)
+    external_test  : (681696, 7)
+
+[*] Computing baselines from training data...
+    HTTPS upload threshold  : 116.6 MB  (mean+3σ)
+    HTTPS PCR threshold     : -0.7918  (mean=-0.8046  std=0.0043)
+    DNS flow threshold      : 1399 flows  (mean+3σ)
+    BotNet interval p05     : 1741.9
+    External ratio window   : [8.3817, 8.6226]
+    Internal DNS servers    : {'192.168.101.229', '192.168.101.226'}
+
+[*] Network characterisation — internal destination countries (36 total):
+    PT     234,442 flows    2669.7 MB  (37.4%)
+    US     164,761 flows    1875.9 MB  (26.3%)
+    CA      93,719 flows    1068.2 MB  (14.9%)
+    FR      64,307 flows     733.6 MB  (10.2%)
+    NL      37,617 flows     429.6 MB  (6.0%)
+    GB       8,725 flows      99.4 MB  (1.4%)
+    ES       7,860 flows      89.3 MB  (1.3%)
+    BR       5,850 flows      66.8 MB  (0.9%)
+    IE       5,810 flows      67.0 MB  (0.9%)
+    DE       1,623 flows      18.2 MB  (0.3%)
+    ...      2,808 flows  (26 other countries)
+
+[*] Network characterisation — external inter-flow intervals:
+    mean=807.6s  median=104.0s  std=11879.4s  p90=191.0s  p95=3475.0s
+
+═══════════════════════════════════════════════════════
+  Step 2 — detect_external_anomalies()
+═══════════════════════════════════════════════════════
+  [ALERT] Anomalous External User
+          IP        : 188.83.72.174
+          Metric    : down/up ratio = 8.3343
+          Baseline  : mean=8.5021 std=0.0402
+          Threshold : [8.3817, 8.6226]
+          Deviation : 4.2σ
+
+  [ALERT] Anomalous External User
+          IP        : 188.83.72.182
+          Metric    : down/up ratio = 8.6614
+          Baseline  : mean=8.5021 std=0.0402
+          Threshold : [8.3817, 8.6226]
+          Deviation : 4.0σ
+
+  [ALERT] Anomalous External User
+          IP        : 188.83.72.210
+          Metric    : down/up ratio = 8.6439
+          Baseline  : mean=8.5021 std=0.0402
+          Threshold : [8.3817, 8.6226]
+          Deviation : 3.5σ
+
+  [ALERT] Anomalous External User
+          IP        : 188.83.72.61
+          Metric    : down/up ratio = 8.232
+          Baseline  : mean=8.5021 std=0.0402
+          Threshold : [8.3817, 8.6226]
+          Deviation : 6.7σ
+
+  [ALERT] Anomalous External User
+          IP        : 188.83.72.64
+          Metric    : down/up ratio = 8.3384
+          Baseline  : mean=8.5021 std=0.0402
+          Threshold : [8.3817, 8.6226]
+          Deviation : 4.1σ
+
+
+═══════════════════════════════════════════════════════
+  Step 3 — detect_https_exfiltration()
+═══════════════════════════════════════════════════════
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.187
+          Metric    : total upload (port 443) = 7586.3 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : 316.4σ
+          Note      : PCR=0.762  pcr_threshold=-0.792  triggered_by=volume+PCR
+
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.14
+          Metric    : total upload (port 443) = 5352.1 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : 222.6σ
+          Note      : PCR=0.898  pcr_threshold=-0.792  triggered_by=volume+PCR
+
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.208
+          Metric    : total upload (port 443) = 4402.0 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : 182.8σ
+          Note      : PCR=0.799  pcr_threshold=-0.792  triggered_by=volume+PCR
+
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.26
+          Metric    : total upload (port 443) = 259.2 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : 9.0σ
+          Note      : PCR=-0.328  pcr_threshold=-0.792  triggered_by=volume+PCR
+
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.197
+          Metric    : total upload (port 443) = 138.3 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : 3.9σ
+          Note      : PCR=-0.408  pcr_threshold=-0.792  triggered_by=volume+PCR
+
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.207
+          Metric    : total upload (port 443) = 119.0 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : 3.1σ
+          Note      : PCR=-0.802  pcr_threshold=-0.792  triggered_by=volume
+
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.188
+          Metric    : total upload (port 443) = 39.4 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : -0.2σ
+          Note      : PCR=-0.583  pcr_threshold=-0.792  triggered_by=PCR
+
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.78
+          Metric    : total upload (port 443) = 6.9 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : -1.6σ
+          Note      : PCR=-0.790  pcr_threshold=-0.792  triggered_by=PCR
+
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.128
+          Metric    : total upload (port 443) = 4.7 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : -1.7σ
+          Note      : PCR=-0.788  pcr_threshold=-0.792  triggered_by=PCR
+
+  [ALERT] HTTPS Data Exfiltration
+          IP        : 192.168.101.117
+          Metric    : total upload (port 443) = 1.2 MB
+          Baseline  : mean=45.1 MB  std=23.8 MB
+          Threshold : 116.6 MB
+          Deviation : -1.8σ
+          Note      : PCR=-0.783  pcr_threshold=-0.792  triggered_by=PCR
+
+
+═══════════════════════════════════════════════════════
+  Step 4 — detect_new_geo_destinations()
+═══════════════════════════════════════════════════════
+  [ALERT] Anomalous Geo Destination (Broad New Reach)
+          IP        : 192.168.101.11
+          Metric    : new countries for this IP = 10 new countries: BR, CA, CH, ES, FR, GB, IE, NL, PT, US
+          Baseline  : 0 countries known for this IP
+          Threshold : >= 10 new countries
+          Deviation : +10 new
+          Note      : flows_to_new=977  bytes_to_new=10622.1 KB
+
+  [ALERT] Anomalous Geo Destination (New Country)
+          IP        : 192.168.101.125
+          Metric    : countries new to entire network = BG, CZ, DK, FI, IR, LV, PL, PY, RU, SC, UA
+          Baseline  : 11 countries known for this IP
+          Threshold : 36 countries seen in training
+          Deviation : +11 new to network
+          Note      : flows_to_new=523  bytes_to_new=9623.1 KB
+
+  [ALERT] Anomalous Geo Destination (Broad New Reach)
+          IP        : 192.168.101.125
+          Metric    : new countries for this IP = 25 new countries: AT, AU, BG, BH, CH, CN, CZ, DK, FI, ID, IL, IN, IR, JP, KR, LV, PH, PL, PY, RO, RU, SC, SE, SG, UA
+          Baseline  : 11 countries known for this IP
+          Threshold : >= 10 new countries
+          Deviation : +25 new
+          Note      : flows_to_new=794  bytes_to_new=14773.8 KB
+
+  [ALERT] Anomalous Geo Destination (New Country)
+          IP        : 192.168.101.167
+          Metric    : countries new to entire network = BE
+          Baseline  : 13 countries known for this IP
+          Threshold : 36 countries seen in training
+          Deviation : +1 new to network
+          Note      : flows_to_new=9  bytes_to_new=73.0 KB
+
+  [ALERT] Anomalous Geo Destination (New Country)
+          IP        : 192.168.101.36
+          Metric    : countries new to entire network = AR, BA, BG, BY, CZ, EE, FI, GE, HU, IQ, IR, KZ, LU, LV, PL, RU, UA
+          Baseline  : 13 countries known for this IP
+          Threshold : 36 countries seen in training
+          Deviation : +17 new to network
+          Note      : flows_to_new=904  bytes_to_new=17224.6 KB
+
+  [ALERT] Anomalous Geo Destination (Broad New Reach)
+          IP        : 192.168.101.36
+          Metric    : new countries for this IP = 29 new countries: AR, AU, BA, BG, BY, CN, CZ, EE, FI, GE, HK, HU, IN, IQ, IR, JP, KR, KZ, LU, LV, MY, NO, NZ, PH, PL, RU, SE, UA, ZA
+          Baseline  : 13 countries known for this IP
+          Threshold : >= 10 new countries
+          Deviation : +29 new
+          Note      : flows_to_new=1285  bytes_to_new=24394.0 KB
+
+  [ALERT] Anomalous Geo Destination (New Country)
+          IP        : 192.168.101.72
+          Metric    : countries new to entire network = BD, BY, BZ, EE, FI, GR, HR, IR, KZ, LU, LV, NG, PL, RU, UA
+          Baseline  : 10 countries known for this IP
+          Threshold : 36 countries seen in training
+          Deviation : +15 new to network
+          Note      : flows_to_new=1157  bytes_to_new=22351.3 KB
+
+  [ALERT] Anomalous Geo Destination (Broad New Reach)
+          IP        : 192.168.101.72
+          Metric    : new countries for this IP = 30 new countries: AT, AU, BD, BY, BZ, CH, CN, DE, EE, FI, GR, HK, HR, IL, IN, IR, JP, KR, KZ, LU, LV, MY, NG, NZ, PL, RO, RU, SE, SG, UA
+          Baseline  : 10 countries known for this IP
+          Threshold : >= 10 new countries
+          Deviation : +30 new
+          Note      : flows_to_new=1681  bytes_to_new=32244.3 KB
+
+  [ALERT] Anomalous Geo Destination (Broad New Reach)
+          IP        : 192.168.101.93
+          Metric    : new countries for this IP = 11 new countries: BR, CA, DE, ES, FR, GB, IE, NL, PT, SE, US
+          Baseline  : 0 countries known for this IP
+          Threshold : >= 10 new countries
+          Deviation : +11 new
+          Note      : flows_to_new=2741  bytes_to_new=31725.6 KB
+
+
+═══════════════════════════════════════════════════════
+  Step 5 — detect_dns_anomalies()
+═══════════════════════════════════════════════════════
+  [ALERT] DNS Volume Anomaly (C&C / Exfiltration)
+          IP        : 192.168.101.41
+          Metric    : DNS flow count = 39493
+          Baseline  : mean=536  std=288  train=305
+          Threshold : 1399 flows
+          Deviation : 135.5σ
+          Note      : median interval=5.0s  increase=129.5x  queries/dst=19746
+
+  [ALERT] DNS Volume Anomaly (C&C / Exfiltration)
+          IP        : 192.168.101.23
+          Metric    : DNS flow count = 8651
+          Baseline  : mean=536  std=288  train=1004
+          Threshold : 1399 flows
+          Deviation : 28.2σ
+          Note      : median interval=5.0s  increase=8.6x  queries/dst=4326
+
+  [ALERT] DNS Volume Anomaly (C&C / Exfiltration)
+          IP        : 192.168.101.201
+          Metric    : DNS flow count = 2941
+          Baseline  : mean=536  std=288  train=187
+          Threshold : 1399 flows
+          Deviation : 8.4σ
+          Note      : median interval=5.0s  increase=15.7x  queries/dst=1470
+
+  [ALERT] DNS Volume Anomaly (C&C / Exfiltration)
+          IP        : 192.168.101.148
+          Metric    : DNS flow count = 1661
+          Baseline  : mean=536  std=288  train=345
+          Threshold : 1399 flows
+          Deviation : 3.9σ
+          Note      : median interval=5.0s  increase=4.8x  queries/dst=830
+
+  [ALERT] DNS Volume Anomaly (C&C / Exfiltration)
+          IP        : 192.168.101.207
+          Metric    : DNS flow count = 1418
+          Baseline  : mean=536  std=288  train=416
+          Threshold : 1399 flows
+          Deviation : 3.1σ
+          Note      : median interval=5.0s  increase=3.4x  queries/dst=709
+
+
+═══════════════════════════════════════════════════════
+  Step 6 — detect_botnet_beaconing()
+═══════════════════════════════════════════════════════
+  [ALERT] BotNet Beaconing
+          IP        : 192.168.101.23
+          Metric    : inter-flow interval std = 594.6
+          Baseline  : mean=8350  p05=1742
+          Threshold : < 1741.9 (p05 of training)
+          Deviation : 595 s  (0.34× p05 floor)
+          Note      : beaconing via DNS (median interval=5.0s)  |  HTTPS=1990 flows  DNS=8651 flows
+
+  [ALERT] BotNet Beaconing
+          IP        : 192.168.101.117
+          Metric    : inter-flow interval std = 937.9
+          Baseline  : mean=8350  p05=1742
+          Threshold : < 1741.9 (p05 of training)
+          Deviation : 938 s  (0.54× p05 floor)
+          Note      : beaconing via HTTPS (median interval=100.0s)  |  HTTPS=111 flows  DNS=19 flows
+
+  [ALERT] BotNet Beaconing
+          IP        : 192.168.101.41
+          Metric    : inter-flow interval std = 1185.1
+          Baseline  : mean=8350  p05=1742
+          Threshold : < 1741.9 (p05 of training)
+          Deviation : 1185 s  (0.68× p05 floor)
+          Note      : beaconing via DNS (median interval=5.0s)  |  HTTPS=3965 flows  DNS=39493 flows
+
+  [ALERT] BotNet Beaconing
+          IP        : 192.168.101.32
+          Metric    : inter-flow interval std = 1241.9
+          Baseline  : mean=8350  p05=1742
+          Threshold : < 1741.9 (p05 of training)
+          Deviation : 1242 s  (0.71× p05 floor)
+          Note      : beaconing via mixed (HTTPS median=99s, DNS median=5s)  |  HTTPS=575 flows  DNS=240 flows
+
+  [ALERT] BotNet Beaconing
+          IP        : 192.168.101.72
+          Metric    : inter-flow interval std = 1402.9
+          Baseline  : mean=8350  p05=1742
+          Threshold : < 1741.9 (p05 of training)
+          Deviation : 1403 s  (0.81× p05 floor)
+          Note      : beaconing via HTTPS (median interval=102.0s)  |  HTTPS=8032 flows  DNS=775 flows
+
+  [ALERT] BotNet Beaconing
+          IP        : 192.168.101.201
+          Metric    : inter-flow interval std = 1598.1
+          Baseline  : mean=8350  p05=1742
+          Threshold : < 1741.9 (p05 of training)
+          Deviation : 1598 s  (0.92× p05 floor)
+          Note      : beaconing via mixed (HTTPS median=103s, DNS median=5s)  |  HTTPS=8463 flows  DNS=2941 flows
+
+  [ALERT] BotNet Beaconing
+          IP        : 192.168.101.160
+          Metric    : inter-flow interval std = 1666.8
+          Baseline  : mean=8350  p05=1742
+          Threshold : < 1741.9 (p05 of training)
+          Deviation : 1667 s  (0.96× p05 floor)
+          Note      : beaconing via mixed (HTTPS median=104s, DNS median=5s)  |  HTTPS=1112 flows  DNS=190 flows
+
+  [ALERT] BotNet Beaconing
+          IP        : 192.168.101.188
+          Metric    : inter-flow interval std = 1696.7
+          Baseline  : mean=8350  p05=1742
+          Threshold : < 1741.9 (p05 of training)
+          Deviation : 1697 s  (0.97× p05 floor)
+          Note      : beaconing via mixed (HTTPS median=103s, DNS median=5s)  |  HTTPS=1462 flows  DNS=230 flows
+
+
+═══════════════════════════════════════════════════════
+  FINAL CONSOLIDATED REPORT
+═══════════════════════════════════════════════════════
+  Total unique anomalous IPs : 27
+  Internal (192.168.101.x)   : 22
+  External (188.83.72.x)     : 5
+
+  [HIGH  ] 192.168.101.117  →  detect_https_exfiltration | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.188  →  detect_https_exfiltration | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.201  →  detect_dns_anomalies | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.207  →  detect_https_exfiltration | detect_dns_anomalies
+  [HIGH  ] 192.168.101.23  →  detect_dns_anomalies | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.41  →  detect_dns_anomalies | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.72  →  detect_new_geo_destinations | detect_botnet_beaconing
+  [MEDIUM] 188.83.72.174  →  detect_external_anomalies
+  [MEDIUM] 188.83.72.182  →  detect_external_anomalies
+  [MEDIUM] 188.83.72.210  →  detect_external_anomalies
+  [MEDIUM] 188.83.72.61  →  detect_external_anomalies
+  [MEDIUM] 188.83.72.64  →  detect_external_anomalies
+  [MEDIUM] 192.168.101.11  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.125  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.128  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.14  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.148  →  detect_dns_anomalies
+  [MEDIUM] 192.168.101.160  →  detect_botnet_beaconing
+  [MEDIUM] 192.168.101.167  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.187  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.197  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.208  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.26  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.32  →  detect_botnet_beaconing
+  [MEDIUM] 192.168.101.36  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.78  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.93  →  detect_new_geo_destinations
+
+[*] Sending UEBA alerts to Wazuh (172.100.0.12:514)...
+    → Alarm UEBA 188.83.72.174
+    → Alarm UEBA 188.83.72.182
+    → Alarm UEBA 188.83.72.210
+    → Alarm UEBA 188.83.72.61
+    → Alarm UEBA 188.83.72.64
+    → Alarm UEBA 192.168.101.187
+    → Alarm UEBA 192.168.101.14
+    → Alarm UEBA 192.168.101.208
+    → Alarm UEBA 192.168.101.26
+    → Alarm UEBA 192.168.101.197
+    → Alarm UEBA 192.168.101.207
+    → Alarm UEBA 192.168.101.188
+    → Alarm UEBA 192.168.101.78
+    → Alarm UEBA 192.168.101.128
+    → Alarm UEBA 192.168.101.117
+    → Alarm UEBA 192.168.101.11
+    → Alarm UEBA 192.168.101.125
+    → Alarm UEBA 192.168.101.167
+    → Alarm UEBA 192.168.101.36
+    → Alarm UEBA 192.168.101.72
+    → Alarm UEBA 192.168.101.93
+    → Alarm UEBA 192.168.101.41
+    → Alarm UEBA 192.168.101.23
+    → Alarm UEBA 192.168.101.201
+    → Alarm UEBA 192.168.101.148
+    → Alarm UEBA 192.168.101.32
+    → Alarm UEBA 192.168.101.160
+
