@@ -52,11 +52,32 @@ def is_private(ip):
 
 def compute_baselines():
     """Compute all baseline statistics from training data.
-    Returns a dict consumed by every rule function."""
+
+    Reads internal_train and external_train once and returns a single dict
+    that every rule function consumes. Nothing is printed or flagged here —
+    this is the statistical foundation of the entire UEBA pipeline.
+
+    Returned keys and their consumers:
+      https_up_mean, https_up_std          → Step 3: volume threshold (mean + 3σ)
+      pcr_mean, pcr_std                    → Step 3: PCR threshold (mean + 3σ)
+      dns_flows_mean, dns_flows_std        → Step 5: DNS volume threshold (mean + 3σ)
+      dns_dst_per_ip                       → Step 5: per-alert extra context
+      dns_internal_servers                 → Step 5: zero-threshold public-DNS rule
+      countries_per_ip                     → Step 4: per-IP known country set (Tier-2)
+      country_stats, total_train_countries → Step 4 + report characterisation
+      interval_std_mean, _std, _p05        → Step 6: beaconing threshold (p05)
+      ext_ratio_mean, ext_ratio_std        → Step 2: external ratio window
+      ext_interval_mean/median/std/p90/p95 → characterisation only (report)
+    """
 
     b = {}
 
-    # ── Internal: HTTPS (port 443) ────────────────────────────────────────────
+    # ── Step 3 baseline: HTTPS upload volume and PCR ──────────────────────────
+    # Group all port-443 flows by source IP and aggregate upload/download totals.
+    # PCR = (up - down) / (up + down), range [-1, +1].
+    # Normal HTTPS is download-heavy: training PCR ≈ -0.80 (mean), std ≈ 0.004.
+    # Exfiltration pushes more bytes out than in → PCR rises toward 0 or +1.
+    # Alert fires if upload volume OR PCR individually exceeds mean + 3σ.
     https = int_train[int_train['port'] == 443]
     https_per_ip = https.groupby('src_ip').agg(
         https_flows  = ('up_bytes', 'count'),
@@ -71,7 +92,13 @@ def compute_baselines():
     b['pcr_mean'] = pcr.mean()
     b['pcr_std']  = pcr.std()
 
-    # ── Internal: DNS (port 53) ───────────────────────────────────────────────
+    # ── Step 5 baseline: DNS flow volume and internal server set ──────────────
+    # In training every client queries only the two internal DNS servers (.226,
+    # .229) — no exceptions. This absolute invariant powers the zero-threshold
+    # DNS-2 sub-rule: any query outside dns_internal_servers is immediately
+    # anomalous without needing a statistical test.
+    # DNS-1 sub-rule uses mean + 3σ on per-client flow count. Both DNS tunneling
+    # and C&C beaconing generate far more queries than any legitimate client.
     dns = int_train[int_train['port'] == 53]
     dns_per_ip = dns.groupby('src_ip').agg(
         dns_flows  = ('up_bytes', 'count'),
@@ -82,20 +109,21 @@ def compute_baselines():
     b['dns_flows_mean'] = dns_per_ip['dns_flows'].mean()
     b['dns_flows_std']  = dns_per_ip['dns_flows'].std()
 
-    # Set of DNS destination IPs per client (used by rule_dns to detect public DNS)
-    b['dns_dst_per_ip'] = dns.groupby('src_ip')['dst_ip'].apply(set).to_dict()
-
-    # All DNS destinations seen in training (should only be internal servers)
+    b['dns_dst_per_ip']       = dns.groupby('src_ip')['dst_ip'].apply(set).to_dict()
     b['dns_internal_servers'] = set(dns['dst_ip'].unique())
 
-    # ── Internal: geo destinations per client ─────────────────────────────────
-    # Only tag public dst_ip (private IPs have no country/ASN)
+    # ── Step 4 baseline: geo destinations per client ──────────────────────────
+    # Only public dst_ip addresses are geo-tagged (private IPs have no country).
+    # Two structures are built:
+    #   countries_per_ip  — per-client set, used in Tier-2 (per-IP extreme reach)
+    #   global set        — union of all, recomputed inside the rule for Tier-1
+    #     (new-to-entire-network country detection)
+    # country_stats is a flow+byte breakdown used only for report characterisation.
     pub = int_train[~int_train['dst_ip'].apply(is_private)].copy()
     pub['country'] = pub['dst_ip'].apply(get_country)
 
     b['countries_per_ip'] = pub.groupby('src_ip')['country'].apply(set).to_dict()
 
-    # Destination country frequency table — used for report characterisation
     country_stats = pub.groupby('country').agg(
         flows = ('up_bytes', 'count'),
         up_mb = ('up_bytes', lambda x: round(x.sum() / 1e6, 1)),
@@ -103,7 +131,14 @@ def compute_baselines():
     b['country_stats']         = country_stats
     b['total_train_countries'] = len(country_stats)
 
-    # ── Internal: inter-flow interval std (BotNet baseline) ───────────────────
+    # ── Step 6 baseline: inter-flow interval std (beaconing) ─────────────────
+    # Flows are sorted per-client by timestamp; diff() gives the time gap between
+    # consecutive flows. The std of these gaps measures how *regular* the traffic
+    # pattern is. A botnet beacon fires at a fixed interval → very low std.
+    # Training distribution is right-skewed (mean ≈ 8350s, long right tail from
+    # idle clients). mean - 3σ ≈ -11,654s — meaningless for a std value.
+    # Solution: use the 5th percentile as the lower-bound threshold instead.
+    # Any test client below p05 of training is flagged as suspiciously regular.
     sorted_train = int_train.sort_values(['src_ip', 'timestamp']).copy()
     sorted_train['interval'] = sorted_train.groupby('src_ip')['timestamp'].diff()
 
@@ -113,7 +148,13 @@ def compute_baselines():
     b['interval_std_std']  = interval_std_per_ip.std()
     b['interval_std_p05']  = interval_std_per_ip.quantile(0.05)
 
-    # ── External: down/up ratio ───────────────────────────────────────────────
+    # ── Step 2 baseline: external client down/up ratio ────────────────────────
+    # External clients (188.83.72.x) access corporate port-443 servers.
+    # Training ratio is extremely tight: mean ≈ 8.50, std ≈ 0.04.
+    # A 3σ window gives [8.38, 8.62]. The tight std (0.04) means even a small
+    # deviation is statistically significant — at 3σ the expected false-positive
+    # rate is 0.1% per client. A client uploading unusually much (exfiltration to
+    # the server) or downloading unusually little will break this distribution.
     ext_per_ip = ext_train.groupby('src_ip').agg(
         total_up   = ('up_bytes', 'sum'),
         total_down = ('down_bytes', 'sum'),
@@ -122,7 +163,10 @@ def compute_baselines():
     b['ext_ratio_mean'] = ext_per_ip['ratio'].mean()
     b['ext_ratio_std']  = ext_per_ip['ratio'].std()
 
-    # ── External: inter-flow intervals (characterisation only) ───────────────
+    # ── External: inter-flow intervals (characterisation only) ────────────────
+    # Not used in any detection rule. Confirms the heavy-tailed distribution
+    # (mean >> median) typical of real human browsing, validating that the
+    # training data is not synthetic.
     ext_sorted = ext_train.sort_values(['src_ip', 'timestamp']).copy()
     ext_sorted['interval'] = ext_sorted.groupby('src_ip')['timestamp'].diff()
     ext_iv = ext_sorted['interval'].dropna()
@@ -242,6 +286,9 @@ def detect_new_geo_destinations(baselines: dict) -> list[dict]:
     NEW_COUNTRY_PER_IP_THRESHOLD = 10
     MIN_INTENSITY_FLOWS          = 5   # minimum flows to new-country IPs before alert fires (CDN noise filter)
 
+    # Pre-group once — avoids O(n×m) re-scan of pub_test on every iteration
+    ip_flows_map = {ip: df for ip, df in pub_test.groupby('src_ip')}
+
     alerts = []
     all_ips = set(test_countries_per_ip)
 
@@ -251,7 +298,7 @@ def detect_new_geo_destinations(baselines: dict) -> list[dict]:
         new_to_network  = test_countries - global_train_countries
         new_to_ip       = test_countries - known_countries
 
-        ip_flows = pub_test[pub_test['src_ip'] == ip]
+        ip_flows = ip_flows_map.get(ip, pd.DataFrame(columns=pub_test.columns))
 
         # Tier 1: client contacts a country the whole network never saw in training
         if new_to_network:
@@ -397,7 +444,9 @@ def detect_botnet_beaconing(baselines: dict) -> list[dict]:
         elif https_std is not None and https_std < threshold:
             protocol = f'HTTPS (median interval={https_med:.1f}s)'
         else:
-            protocol = f'mixed (HTTPS median={https_med:.0f}s, DNS median={dns_med:.0f}s)'
+            https_m  = f"{https_med:.0f}s" if https_med is not None else "N/A"
+            dns_m    = f"{dns_med:.0f}s"   if dns_med   is not None else "N/A"
+            protocol = f'mixed (HTTPS median={https_m}, DNS median={dns_m})'
 
         train_std = baselines['interval_std_mean']
 
@@ -504,7 +553,7 @@ def main() -> None:
     print(f"  External (188.83.72.x)     : {len(external)}")
     print()
 
-    sorted_ips = sorted(ip_rules.items(), key=lambda x: (-len(x[1]), x[0]))
+    sorted_ips = sorted(ip_rules.items(), key=lambda x: (-len(x[1]), ipaddress.IPv4Address(x[0])))
     for ip, rules in sorted_ips:
         confidence = "HIGH  " if len(rules) >= 2 else "MEDIUM"
         rules_str  = " | ".join(rules)
@@ -521,6 +570,8 @@ def main() -> None:
         except OSError as e:
             print(f"    [WARN] Could not reach Wazuh manager: {e}")
     print()
+
+    geodb.close()
 
 
 if __name__ == "__main__":

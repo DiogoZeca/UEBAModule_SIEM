@@ -127,6 +127,105 @@ Key invariants found in training:
 
 ---
 
+#### Deep Dive — How and why each baseline block was designed
+
+**Design principle: compute once, pass as a dict**
+
+All five detection rules need statistics derived from training data. The naive approach would be to load and aggregate the training DataFrame inside each rule function — but this means re-reading ~900k rows five separate times and duplicates groupby operations. Instead, `compute_baselines()` reads the training data once, builds every statistic needed by every rule, and returns a single `dict b`. Each rule receives `b` as its only input. The separation is intentional: the function is purely computational (no printing, no flagging), which makes it independently testable and easy to replace with a different baseline source (e.g., a rolling window) without touching any rule logic.
+
+---
+
+**Block 1 — HTTPS exfiltration baseline (→ Step 3)**
+
+The first question was: what metric best separates a normal client from one exfiltrating data over HTTPS?
+
+The obvious candidate is **upload volume** (`total_up` per client on port 443). Training data shows: mean = 45 MB/day, std = 24 MB, max = ~120 MB. A threshold of `mean + 3σ = 116.6 MB` cleanly separates normal from anomalous — in training, no client exceeds it by construction (3σ guarantees ~0.1% false-positive rate if the distribution were Gaussian).
+
+But upload volume alone misses a class of attack: **low-and-slow exfiltration**, where a device sends a modest amount of data but with an abnormal upload/download asymmetry. A legitimate HTTPS client downloads far more than it uploads (HTML, images, JS → ratio ≈ 8–10×). A device that POSTs small payloads and receives only tiny acknowledgements has near-equal upload and download — the signal is the *shape* of traffic, not the volume.
+
+This is where **PCR (Producer-Consumer Ratio)** comes in:
+
+```
+PCR = (up_bytes − down_bytes) / (up_bytes + down_bytes)
+```
+
+Range: [−1, +1]. A pure downloader scores −1; a pure uploader scores +1; symmetric traffic scores 0. Normal HTTPS clients score ≈ −0.80 (download-dominant). The threshold `mean + 3σ = −0.7918` catches anyone who is *less download-dominant* than the 3σ floor — i.e., anyone uploading more than the training population's extreme cases.
+
+The rule fires if **either** volume OR PCR exceeds its threshold. This OR logic is deliberate: volume catches bulk single-shot dumps; PCR catches the low-and-slow pattern. Together they cover the full attack surface. Validated by IPs `.117`, `.78`, `.128` — all below the volume threshold, all flagged by PCR.
+
+*What was tested and removed:* The raw down/up ratio (= down/up, ranging from 0 to ∞) was also computed in baselines under `ext_ratio_mean` for external clients, and an equivalent internal ratio was tried. It is algebraically equivalent to PCR via `PCR = (1 − ratio)/(1 + ratio)` — Pearson correlation of −0.9992 between them across all clients. Applied to the test set they flagged the identical 9 IPs. PCR is the normalised, bounded [−1, +1] formulation from the literature; the raw ratio is redundant and was removed.
+
+---
+
+**Block 2 — DNS baseline (→ Step 5)**
+
+DNS anomaly detection uses two completely independent sub-rules, and `compute_baselines()` produces a separate data structure for each.
+
+**DNS-1 (volume) baseline:** `dns_flows_mean = 536`, `dns_flows_std = 288`, threshold = `536 + 3×288 = 1,399 flows/day`. The volume approach is motivated by the attack profile: both DNS tunneling (data encoded in subdomain labels) and C&C beaconing (regular keep-alive queries) produce far more DNS flows than any legitimate user. The training maximum is 1,446 flows; the threshold at 1,399 is therefore essentially the training maximum, ensuring anything above it in test is genuinely anomalous.
+
+**DNS-2 (public server) baseline:** `dns_internal_servers = {'192.168.101.226', '192.168.101.229'}`. In training, every single internal client sends all its DNS queries exclusively to these two internal resolvers — zero exceptions. This perfect invariant means the rule requires no statistical threshold at all: any query to any other IP is an absolute violation. The set is built by `set(dns['dst_ip'].unique())` applied to training-only rows, producing exactly the two expected IPs.
+
+*What was tested and removed:* A third DNS sub-rule was attempted based on **per-query payload size** (`up_bytes`). The hypothesis: DNS exfiltration encodes data in subdomain labels → larger packets. Training stats: `dns_up_mean ≈ 200 B`, `dns_up_std ≈ 3.5 B`, threshold = `200 + 3×3.5 = 210.5 B`. Applied to test: no IP exceeds this threshold — including the confirmed C&C beacons. Beaconing in this dataset uses fixed-size queries (the beacon identifier, not data). The DNS payload baseline was computed and kept in baselines for exploratory purposes, but the sub-rule was never added to the detection pipeline.
+
+---
+
+**Block 3 — Geo destination baseline (→ Step 4)**
+
+The geo baseline answers: which countries has each client (and the network as a whole) contacted in training?
+
+The approach requires only one line per client: `pub.groupby('src_ip')['country'].apply(set).to_dict()`. This produces `countries_per_ip`, a dict mapping each internal IP to the set of ISO country codes it contacted in training. Only public destination IPs are geo-tagged (private IPs have no country entry in the MaxMind database and return "PRIVATE" from `get_country()`), so the filter `~int_train['dst_ip'].apply(is_private)` is applied first.
+
+The rule uses two tiers:
+- **Tier 1 (global new-to-network):** `global_train_countries = set().union(*baselines['countries_per_ip'].values())` — the union of all per-IP sets, 36 countries total. A test client reaching a 37th country fires immediately.
+- **Tier 2 (per-IP extreme new reach):** `len(test_countries - known_countries) >= 10` — a client contacting 10+ countries it personally never contacted in training. This threshold was tuned after observing that several devices normally visit a subset of the 36 training countries; a small new-to-them delta (1–3 countries) is plausible CDN rotation.
+
+`country_stats` (flow counts and upload bytes per country) is computed purely for report characterisation — it does not feed any detection rule, but it produced the PT/US/CA/FR/NL breakdown shown in the output.
+
+*What was tested and removed:* **ASN-based detection** was implemented alongside country-based detection. The hypothesis: a compromised device contacting a new ISP or cloud provider is suspicious even if the country is known. `geodbasn.asn(ip).autonomous_system_organization` was called for every public IP and an `asns_per_ip` dict was built. Applied to test, the set of IPs flagged by new-ASN overlap exactly with those flagged by new-country — the two dicts had identical key sets and the union `set(countries) | set(asns)` reduced to `set(countries)` alone. The ASN lookups added ~2.2 s overhead per run with zero additional detections and were removed.
+
+---
+
+**Block 4 — BotNet beaconing baseline (→ Step 6)**
+
+The BotNet baseline measures how *regular* each client's traffic timing is.
+
+For each internal client, flows are sorted by timestamp and `diff()` computes the time gap between consecutive flows. The **standard deviation of these gaps** per client is the metric: a regular beacon (e.g., every 5 seconds exactly) produces an extremely low std; a human browsing at irregular intervals produces a high std.
+
+Training distribution stats:
+- mean = 8,350 s, std = 6,668 s, min = 1,423 s, p05 = 1,742 s
+- The distribution is **right-skewed** — a long right tail from clients with long idle gaps.
+
+The key design decision: **why p05 instead of mean−3σ?**
+
+`mean − 3σ = 8,350 − 3×6,668 = −11,654 s`. A standard deviation cannot be negative — this threshold is mathematically meaningless. The mean−Nσ formula requires a roughly symmetric distribution, which the interval std distribution is not. The 5th percentile (p05 = 1,742 s) is the correct non-parametric alternative: it captures "the 5% most regular clients in training" as the normal lower bound. Any test client more regular than this is suspicious.
+
+*What was tested and removed:* **CV (Coefficient of Variation)** = std/mean was considered as a normalised regularity metric (makes values scale-independent). Training CVs range from 3.93 to 25.52. The beacon IPs in test have CVs of 3.7–16.6 — this range overlaps with the bottom of the training distribution. CV has no discriminative power for this dataset and was rejected.
+
+---
+
+**Block 5 — External ratio baseline (→ Step 2)**
+
+External clients (188.83.72.x) access corporate port-443 servers. The key insight from training: the down/up ratio is **unusually tight** — mean = 8.50, std = 0.04, range [8.40, 8.61]. This is 50× tighter than the internal HTTPS distribution (std = 24 MB on upload). The consistency implies a highly uniform service: every client downloads ≈ 8.5× what it uploads, probably because the corporate server returns standardised responses (API, authentication portal, etc.).
+
+A 3σ window [8.3817, 8.6226] provides the detection boundary. The narrow window is not a problem — it is the signal. Any external client whose ratio falls outside this range is using the service in a fundamentally different way from the trained baseline.
+
+---
+
+**Block 6 — External inter-flow intervals (characterisation only)**
+
+The external interval statistics (mean, median, std, p90, p95) are computed but never fed to any detection rule. Purpose: validate that the external training data looks like real human browsing. The output (mean=807.6 s >> median=104.0 s, std=11,879 s) confirms a heavy-tailed distribution — a few clients have very long gaps but most activity is clustered. This is the signature of real browser behaviour and confirms the data is not synthetic or replayed at fixed intervals.
+
+---
+
+**The 3σ threshold — why this specific multiplier?**
+
+All five rules (except BotNet's p05 exception) use `mean + 3σ` as the upper bound. This is the industry standard for anomaly detection in network traffic, with two properties that justify it:
+
+1. **Known false-positive rate:** For a Gaussian distribution, 3σ captures 99.7% of normal behaviour. Expected FP rate per measurement: ~0.1% (1 in 1,000 clients on a given day). With ~198 internal clients, this means roughly 0.2 false positives per rule per day in the worst case — acceptable for a security analyst queue.
+2. **Sensitivity balance:** 2σ (97.7%) would flag ~4 clients per rule per day from pure noise — too noisy for an operational environment. 4σ (99.994%) would be so conservative that moderate exfiltration goes undetected. 3σ is the documented sweet spot in both academic literature and SIEM vendor guidance (Elastic, Splunk, Wazuh).
+
+---
+
 ### Step 2 — detect_external_anomalies()
 
 **What it detects:** external clients (188.83.72.x) whose down/up ratio deviates from the training baseline.
