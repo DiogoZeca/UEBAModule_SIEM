@@ -175,7 +175,7 @@ As part of the baseline computation, every internal client's HTTPS traffic was m
 | CA | 93719 | 14.9% |
 | FR | 64307 | 10.2% |
 | NL | 37617 | 6.0% |
-| (others) | 18676 | 5.2% |
+| (others) | 32676 | 5.2% |
 
 These 36 countries define the known geographic footprint of this network — any country contacted in the test period that never appeared in training is an immediate network-level anomaly, regardless of which client triggered it.
 
@@ -371,8 +371,7 @@ This is a real limitation of the combined-channel approach, but it also demonstr
 
 # Final Results 
 ## Final output
-Running the full detection pipeline against the test dataset produced 27 unique anomalous IPs — 22 internal clients (192.168.101.x) and 5 external clients (188.83.72.x). Each flagged IP was assigned a confidence level based on how many independent rules triggered it: HIGH when two or more rules agree on the same device, MEDIUM when only one rule fires. The two-level scheme is not arbitrary — when a single rule flags a device, there is always a small residual probability of a false positive; when two completely independent detection methods (operating on different metrics, different protocols, different statistical approaches) both flag the same IP on the same day, the probability of a coincidental double false positive is the product of the individual rates, dropping to approximately 0.01% per device.
- The 7 HIGH confidence IPs are therefore treated as confirmed compromised devices. The 20 MEDIUM confidence IPs are genuine anomalies that warrant investigation but cannot be confirmed by corroboration alone.
+Running the full detection pipeline against the test dataset produced 27 unique anomalous IPs — 22 internal clients (192.168.101.x) and 5 external clients (188.83.72.x). Each flagged IP was assigned a confidence level based on how many independent rules triggered it: HIGH when two or more rules agree on the same device, MEDIUM when only one rule fires. The two-level scheme is not arbitrary — when a single rule flags a device, there is always a small residual probability of a false positive; when two completely independent detection methods (operating on different metrics, different protocols, different statistical approaches) both flag the same IP on the same day, the probability of a coincidental double false positive is the product of the individual rates, dropping to approximately 0.01% per device. The 7 HIGH confidence IPs are therefore treated as confirmed compromised devices. The 20 MEDIUM confidence IPs are genuine anomalies that warrant investigation but cannot be confirmed by corroboration alone.
 ```
  Total Unique Anomalous IPs: 27
     - Internal (192.168.101.x): 22
@@ -434,7 +433,81 @@ The 7 HIGH confidence devices are those flagged by two or more completely indepe
 The 192.168.101.117 is the most notable entry: its upload volume of 1.2 MB is well below the training mean of 45 MB, meaning a volume-only rule would have given it a clean bill of health. It was caught exclusively by PCR and confirmed by BotNet — two independent signals that together make its compromise unambiguous. This is the strongest validation in the entire results for why the dual-signal HTTPS rule was necessary.
 
 
+## Attack Patterns
+Grouping the 27 flagged devices by behaviour reveals nine distinct attack patterns active in the test period:
+
+| Pattern | Devices | Description |
+|----------|---------|-------------|
+| Mass HTTPS Exfiltration | .187, .14, .208 | 4.4-7.6 GB uploaded in a single day, 182-316σ above baseline - bulk data dumps, likely automated |
+| Moderate HTTPS Exfiltration | .197, .26 | 138–259 MB uploaded — above the 116.6 MB threshold by 3.9–9σ, triggered by both volume and PCR |
+| Low-and-Slow Exfiltration | .117, .78, .128, .188 | Upload Volumes below the training mean, caught only by PCR - covert, sustained data leakage |
+| DNS C&C Beaconing | .41, .23, .201, .148 | Exact 5.0s query interval to internal resolvers - malware heartbeat routed through internal DNS relay |
+| HTTPS C&C Beaconing | .117, .72, .32, .160, .188, .201 | Check-in intervals clustering between 99-104s across six independent devices - single malware family, shared hardcoded timer |
+| Dual-Channel implant | .201, .207 | Simultaneous DNS beaconing and HTTPS activity - two independent C&C channels or exfiltration running alongside beaconing |
+| New Device, immediate broad reach | .11, .93 | Zero rows in training, contacted 10-11 countries on first observed day - rogue or newly compromised device |
+| Geo Expansion — known devices | .125, .36, .167 | Devices with training history that suddenly contacted new countries unreachable by any client in training — .125 and .36 reached RU, IR, IQ, KZ across 25–29 new countries; .167 triggered Tier 1 with a single new country (BE, 9 flows) |
+| External upload anomaly | .61, .64, .174, .182, .210 | External clients breaking the tight 8.50 ratio invariant - three uploading more than normal, two downloading more than normal |
+
 
 ---
 
 # SIEM Integration
+
+## Sending the Alert
+Once all anomalous IPs are identified, each one is reported to the Wazuh manager by sending a UDP syslog message in the format "Alarm UEBA <ip>" — exactly as prescribed by the spec. The implementation uses a raw Python socket, requiring no external tool or Wazuh agent on the monitoring machine:
+```python
+def send_syslog_alert(ip: str) -> None:
+  with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+    sock.sendto(f"Alarm UEBA {ip}".encode(), (WAZUH_IP, WAZUH_PORT))
+```
+One packet is sent per flagged IP. All 27 were successfully delivered to 172.100.0.12:514:
+```
+[*] Sending UEBA alerts to Wazuh (172.100.0.12:514)...
+      → Alarm UEBA 192.168.101.23
+      → Alarm UEBA 192.168.101.41
+      → Alarm UEBA 192.168.101.72
+      ...
+      → Alarm UEBA 192.168.101.160   (27 total)
+```
+
+
+## Decoder and Rule 
+For Wazuh to interpret the incoming syslog message, a custom decoder and rule were added inside the wazuh.manager container.
+
+The decoder (/var/ossec/etc/decoders/local_decoder.xml) identifies the message by its prefix and extracts the flagged IP into the srcip field:
+```xml
+<decoder name="ueba_alarm">
+    <prematch>Alarm UEBA</prematch>
+  </decoder>
+
+  <decoder name="ueba_alarm_fields">
+    <parent>ueba_alarm</parent>
+    <regex offset="after_parent">(\d+.\d+.\d+.\d+)</regex>
+    <order>srcip</order>
+  </decoder>
+```
+
+  The rule (/var/ossec/etc/rules/local_rules.xml) fires a level 7 alert every time this decoder matches:
+```xml
+  <group name="syslog,ueba,">
+    <rule id="100201" level="7">
+      <decoded_as>ueba_alarm</decoded_as>
+      <description>UEBA Alarm triggered from $(srcip)</description>
+      <group>ueba_security_event</group>
+    </rule>
+  </group>
+```
+Level 7 in Wazuh means "important event requiring analyst review" — the lowest severity that appears in the Security Events dashboard by default. 
+Rule ID 100201 is explicitly prescribed by the spec; the 100xxx namespace is reserved for user-defined rules, and the 2xx suffix distinguishes this UEBA exercise from earlier ones in the guide.
+
+
+## Dashboard 
+With the Wazuh stack running (docker compose up -d) and all 27 syslog packets delivered, navigating to Security Events and applying the DQL filter rule.id: 100201 shows one event per flagged IP — 27 hits, each carrying data.srcip with the anomalous device's address, rule.level = 7, and decoder.name = ueba_alarm.
+![Wazuh dashboard — 27 UEBA alerts for rule.id 100201](docs/Wazuh_dashboard.png)
+
+## Conclusion
+This integration pattern — an external tool sending "Alarm UEBA <ip>" over UDP syslog — demonstrates that any monitoring system can feed alerts into a SIEM without requiring a Wazuh agent on the monitoring machine. The Wazuh manager acts as a centralised collection point: once the decoder and rule are in place, any source that speaks syslog can contribute structured, queryable events to the same dashboard used for all other security monitoring.
+
+In a production environment this has several practical implications. The flagged IPs stored in data.srcip can be correlated with alerts from other rules — for example, a device flagged by UEBA as beaconing that also triggers a firewall rule becomes a much stronger signal than either alone. The ueba_security_event group makes it trivial to build dashboards, set up email notifications, or trigger active responses such as automated firewall blocks for any IP that crosses a severity threshold. The UEBA module itself needs no knowledge of Wazuh internals — it only needs the manager's IP and port, keeping the two systems loosely coupled and independently deployable.
+
+One limitation worth noting: UDP syslog provides no delivery acknowledgement. A packet dropped under network congestion is silently lost with no retry. For a production deployment where missing an alert is unacceptable, TCP syslog or a Wazuh agent on the monitoring host would be the preferred approach.
