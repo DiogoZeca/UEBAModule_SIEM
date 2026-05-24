@@ -11,6 +11,8 @@
     BotNet interval p05     : 1741.9
     External ratio window   : [8.3817, 8.6226]
     Internal DNS servers    : {'192.168.101.229', '192.168.101.226'}
+    Geo new-country threshold: 15 countries  (p95 per-IP in training)
+    Geo min intensity flows  : 2 flows      (p05 per-IP-per-country)
 
 [*] Network characterisation — internal destination countries (36 total):
     PT     234,442 flows    2669.7 MB  (37.4%)
@@ -154,14 +156,6 @@
 ═══════════════════════════════════════════════════════
   Step 4 — detect_new_geo_destinations()
 ═══════════════════════════════════════════════════════
-  [ALERT] Anomalous Geo Destination (Broad New Reach)
-          IP        : 192.168.101.11
-          Metric    : new countries for this IP = 10 new countries: BR, CA, CH, ES, FR, GB, IE, NL, PT, US
-          Baseline  : 0 countries known for this IP
-          Threshold : >= 10 new countries
-          Deviation : +10 new
-          Note      : flows_to_new=977  bytes_to_new=10622.1 KB
-
   [ALERT] Anomalous Geo Destination (New Country)
           IP        : 192.168.101.125
           Metric    : countries new to entire network = BG, CZ, DK, FI, IR, LV, PL, PY, RU, SC, UA
@@ -174,7 +168,7 @@
           IP        : 192.168.101.125
           Metric    : new countries for this IP = 25 new countries: AT, AU, BG, BH, CH, CN, CZ, DK, FI, ID, IL, IN, IR, JP, KR, LV, PH, PL, PY, RO, RU, SC, SE, SG, UA
           Baseline  : 11 countries known for this IP
-          Threshold : >= 10 new countries
+          Threshold : >= 15 new countries
           Deviation : +25 new
           Note      : flows_to_new=794  bytes_to_new=14773.8 KB
 
@@ -185,6 +179,22 @@
           Threshold : 36 countries seen in training
           Deviation : +1 new to network
           Note      : flows_to_new=9  bytes_to_new=73.0 KB
+
+  [ALERT] Anomalous Geo Destination (New Country)
+          IP        : 192.168.101.175
+          Metric    : countries new to entire network = BE
+          Baseline  : 11 countries known for this IP
+          Threshold : 36 countries seen in training
+          Deviation : +1 new to network
+          Note      : flows_to_new=4  bytes_to_new=36.8 KB
+
+  [ALERT] Anomalous Geo Destination (New Country)
+          IP        : 192.168.101.189
+          Metric    : countries new to entire network = BE
+          Baseline  : 11 countries known for this IP
+          Threshold : 36 countries seen in training
+          Deviation : +1 new to network
+          Note      : flows_to_new=2  bytes_to_new=22.9 KB
 
   [ALERT] Anomalous Geo Destination (New Country)
           IP        : 192.168.101.36
@@ -198,7 +208,7 @@
           IP        : 192.168.101.36
           Metric    : new countries for this IP = 29 new countries: AR, AU, BA, BG, BY, CN, CZ, EE, FI, GE, HK, HU, IN, IQ, IR, JP, KR, KZ, LU, LV, MY, NO, NZ, PH, PL, RU, SE, UA, ZA
           Baseline  : 13 countries known for this IP
-          Threshold : >= 10 new countries
+          Threshold : >= 15 new countries
           Deviation : +29 new
           Note      : flows_to_new=1285  bytes_to_new=24394.0 KB
 
@@ -214,17 +224,9 @@
           IP        : 192.168.101.72
           Metric    : new countries for this IP = 30 new countries: AT, AU, BD, BY, BZ, CH, CN, DE, EE, FI, GR, HK, HR, IL, IN, IR, JP, KR, KZ, LU, LV, MY, NG, NZ, PL, RO, RU, SE, SG, UA
           Baseline  : 10 countries known for this IP
-          Threshold : >= 10 new countries
+          Threshold : >= 15 new countries
           Deviation : +30 new
           Note      : flows_to_new=1681  bytes_to_new=32244.3 KB
-
-  [ALERT] Anomalous Geo Destination (Broad New Reach)
-          IP        : 192.168.101.93
-          Metric    : new countries for this IP = 11 new countries: BR, CA, DE, ES, FR, GB, IE, NL, PT, SE, US
-          Baseline  : 0 countries known for this IP
-          Threshold : >= 10 new countries
-          Deviation : +11 new
-          Note      : flows_to_new=2741  bytes_to_new=31725.6 KB
 
 
 ═══════════════════════════════════════════════════════
@@ -346,33 +348,33 @@
   Internal (192.168.101.x)   : 22
   External (188.83.72.x)     : 5
 
+  [HIGH  ] 192.168.101.23  →  detect_dns_anomalies | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.41  →  detect_dns_anomalies | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.72  →  detect_new_geo_destinations | detect_botnet_beaconing
   [HIGH  ] 192.168.101.117  →  detect_https_exfiltration | detect_botnet_beaconing
   [HIGH  ] 192.168.101.188  →  detect_https_exfiltration | detect_botnet_beaconing
   [HIGH  ] 192.168.101.201  →  detect_dns_anomalies | detect_botnet_beaconing
   [HIGH  ] 192.168.101.207  →  detect_https_exfiltration | detect_dns_anomalies
-  [HIGH  ] 192.168.101.23  →  detect_dns_anomalies | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.41  →  detect_dns_anomalies | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.72  →  detect_new_geo_destinations | detect_botnet_beaconing
+  [MEDIUM] 188.83.72.61  →  detect_external_anomalies
+  [MEDIUM] 188.83.72.64  →  detect_external_anomalies
   [MEDIUM] 188.83.72.174  →  detect_external_anomalies
   [MEDIUM] 188.83.72.182  →  detect_external_anomalies
   [MEDIUM] 188.83.72.210  →  detect_external_anomalies
-  [MEDIUM] 188.83.72.61  →  detect_external_anomalies
-  [MEDIUM] 188.83.72.64  →  detect_external_anomalies
-  [MEDIUM] 192.168.101.11  →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.125  →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.128  →  detect_https_exfiltration
   [MEDIUM] 192.168.101.14  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.148  →  detect_dns_anomalies
-  [MEDIUM] 192.168.101.160  →  detect_botnet_beaconing
-  [MEDIUM] 192.168.101.167  →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.187  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.197  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.208  →  detect_https_exfiltration
   [MEDIUM] 192.168.101.26  →  detect_https_exfiltration
   [MEDIUM] 192.168.101.32  →  detect_botnet_beaconing
   [MEDIUM] 192.168.101.36  →  detect_new_geo_destinations
   [MEDIUM] 192.168.101.78  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.93  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.125  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.128  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.148  →  detect_dns_anomalies
+  [MEDIUM] 192.168.101.160  →  detect_botnet_beaconing
+  [MEDIUM] 192.168.101.167  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.175  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.187  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.189  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.197  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.208  →  detect_https_exfiltration
 
 [*] Sending UEBA alerts to Wazuh (172.100.0.12:514)...
     → Alarm UEBA 188.83.72.174
@@ -390,12 +392,12 @@
     → Alarm UEBA 192.168.101.78
     → Alarm UEBA 192.168.101.128
     → Alarm UEBA 192.168.101.117
-    → Alarm UEBA 192.168.101.11
     → Alarm UEBA 192.168.101.125
     → Alarm UEBA 192.168.101.167
+    → Alarm UEBA 192.168.101.175
+    → Alarm UEBA 192.168.101.189
     → Alarm UEBA 192.168.101.36
     → Alarm UEBA 192.168.101.72
-    → Alarm UEBA 192.168.101.93
     → Alarm UEBA 192.168.101.41
     → Alarm UEBA 192.168.101.23
     → Alarm UEBA 192.168.101.201

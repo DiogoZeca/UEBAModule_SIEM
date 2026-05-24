@@ -131,6 +131,19 @@ def compute_baselines():
     b['country_stats']         = country_stats
     b['total_train_countries'] = len(country_stats)
 
+    # Tier-2 threshold: p95 of per-IP unique country count in training.
+    # Any test client reaching more new-to-it countries than 95% of all training
+    # clients ever contacted is flagged as having unusually broad new reach.
+    # Mirrors the p05 approach used for BotNet — both use tails of the distribution.
+    country_counts_per_ip      = pub.groupby('src_ip')['country'].nunique()
+    b['geo_country_count_p95'] = int(country_counts_per_ip.quantile(0.95))
+
+    # Intensity floor: p05 of per-(IP, country) flow counts in training.
+    # Represents the minimum flows a real contact produces in training — any
+    # new-country access below this floor in the test period is CDN noise.
+    flows_per_ip_country         = pub.groupby(['src_ip', 'country']).size()
+    b['geo_min_intensity_flows'] = max(int(flows_per_ip_country.quantile(0.05)), 2)
+
     # ── Step 6 baseline: inter-flow interval std (beaconing) ─────────────────
     # Flows are sorted per-client by timestamp; diff() gives the time gap between
     # consecutive flows. The std of these gaps measures how *regular* the traffic
@@ -283,8 +296,8 @@ def detect_new_geo_destinations(baselines: dict) -> list[dict]:
 
     test_countries_per_ip = pub_test.groupby('src_ip')['country'].apply(set).to_dict()
 
-    NEW_COUNTRY_PER_IP_THRESHOLD = 10
-    MIN_INTENSITY_FLOWS          = 5   # minimum flows to new-country IPs before alert fires (CDN noise filter)
+    NEW_COUNTRY_PER_IP_THRESHOLD = baselines['geo_country_count_p95']
+    MIN_INTENSITY_FLOWS          = baselines['geo_min_intensity_flows']
 
     # Pre-group once — avoids O(n×m) re-scan of pub_test on every iteration
     ip_flows_map = {ip: df for ip, df in pub_test.groupby('src_ip')}
@@ -507,6 +520,8 @@ def main() -> None:
     print(f"    BotNet interval p05     : {b['interval_std_p05']:.1f}")
     print(f"    External ratio window   : [{b['ext_ratio_mean']-SIGMA*b['ext_ratio_std']:.4f}, {b['ext_ratio_mean']+SIGMA*b['ext_ratio_std']:.4f}]")
     print(f"    Internal DNS servers    : {b['dns_internal_servers']}")
+    print(f"    Geo new-country threshold: {b['geo_country_count_p95']} countries  (p95 per-IP in training)")
+    print(f"    Geo min intensity flows  : {b['geo_min_intensity_flows']} flows      (p05 per-IP-per-country)")
 
     print(f"\n[*] Network characterisation — internal destination countries ({b['total_train_countries']} total):")
     top10 = b['country_stats'].head(10)

@@ -30,7 +30,7 @@ One subsection per rule. For each: what it detects, threshold derivation, result
 - Architecture diagram (ueba.py → UDP/514 → wazuh.manager → indexer → dashboard)
 - Wazuh internal pipeline (decoder → rule → alert → Filebeat → indexer)
 - Decoder + rule code
-- Dashboard screenshot (rule.id: 100201, 28 hits)
+- Dashboard screenshot (rule.id: 100201, 27 hits)
 - Written answer: *"What can you conclude about the usage of such a rule in a real environment?"*
 
 ### 5. Results & Conclusions
@@ -124,6 +124,8 @@ Key invariants found in training:
 | DNS flow count | ~1,399 flows | mean(536) + 3 × std(288) |
 | BotNet interval std | < 1,741.9 s | p05 of training distribution |
 | External ratio | [8.3817, 8.6226] | mean(8.5021) ± 3 × std(0.0402) |
+| Geo new-country (Tier 2) | ≥ 15 new countries | p95 of per-IP country count in training |
+| Geo min intensity flows | ≥ 2 flows | p05 of per-IP-per-country flow count in training |
 
 ---
 
@@ -177,7 +179,7 @@ The approach requires only one line per client: `pub.groupby('src_ip')['country'
 
 The rule uses two tiers:
 - **Tier 1 (global new-to-network):** `global_train_countries = set().union(*baselines['countries_per_ip'].values())` — the union of all per-IP sets, 36 countries total. A test client reaching a 37th country fires immediately.
-- **Tier 2 (per-IP extreme new reach):** `len(test_countries - known_countries) >= 10` — a client contacting 10+ countries it personally never contacted in training. This threshold was tuned after observing that several devices normally visit a subset of the 36 training countries; a small new-to-them delta (1–3 countries) is plausible CDN rotation.
+- **Tier 2 (per-IP extreme new reach):** `len(test_countries - known_countries) >= 15` — a client contacting 15+ countries it personally never contacted in training. The threshold is data-derived: p95 of per-IP unique country counts in training (= 15 countries). Any test client whose new-to-it reach exceeds the 95th percentile of what normal clients contacted in total during training is flagged.
 
 `country_stats` (flow counts and upload bytes per country) is computed purely for report characterisation — it does not feed any detection rule, but it produced the PT/US/CA/FR/NL breakdown shown in the output.
 
@@ -298,19 +300,19 @@ All five rules (except BotNet's p05 exception) use `mean + 3σ` as the upper bou
 
 **Why ASN-based detection was removed:** ASN lookups (`geodbasn`, `get_asn()`) were implemented alongside country lookups. Removed because: (1) the two-tier country approach already covers every IP that would trigger an ASN-based rule — the two dict keys were identical (verified); (2) the union `set(countries) | set(asns)` reduced to `set(countries)` alone; (3) the lookups added ~2.2 s overhead per run with zero additional detections. The `detect_new_geo_destinations()` docstring was also updated to remove the stale "or ASNs" reference, keeping the documented interface consistent with the actual implementation.
 
-**Results: 9 alerts, 6 unique IPs** (after .175 and .189 filtered by intensity)
+**Results: 9 alerts, 6 unique IPs**
 
 | IP | Type | Countries | Note |
 |---|---|---|---|
-| 192.168.101.11 | Tier 2 | 10 new (BR, CA, CH, ES, FR, GB, IE, NL, PT, US) | 0 training rows — new device |
-| 192.168.101.93 | Tier 2 | 11 new (BR, CA, DE, ES, FR, GB, IE, NL, PT, SE, US) | 0 training rows — new device |
 | 192.168.101.125 | Tier 1 + 2 | 25 new incl. BG, IR, LV, PL, PY, RU, UA | high confidence |
 | 192.168.101.36 | Tier 1 + 2 | 29 new incl. AR, BA, BY, IQ, IR, KZ, RU, UA | high confidence |
 | 192.168.101.72 | Tier 1 + 2 | 30 new incl. BD, BY, EE, IR, KZ, LV, NG, RU, UA | **HIGH** (also Botnet) |
-| 192.168.101.167 | Tier 1 | BE only (9 flows, 73 KB) | survived filter; low confidence |
+| 192.168.101.167 | Tier 1 | BE only (9 flows, 73 KB) | borderline; low confidence |
+| 192.168.101.175 | Tier 1 | BE only (4 flows, 36.8 KB) | borderline; passes p05 floor (≥ 2) |
+| 192.168.101.189 | Tier 1 | BE only (2 flows, 22.9 KB) | borderline; exactly at p05 floor |
 
-`.175` and `.189` had < 5 flows to Belgium — CDN noise, correctly filtered.
-`.11` and `.93` had **0 rows in training** (verified). Their sudden appearance with 10–11 country contacts is immediately suspicious regardless of which countries.
+`.11` and `.93` are no longer flagged — both had exactly 10–11 new-to-IP countries, below the data-derived Tier-2 threshold of 15. Their countries (PT, US, CA, FR, NL, GB, IE, BR, DE, SE) were all present in training for other clients, so Tier 1 does not apply either.
+`.175` and `.189` are now flagged — MIN_INTENSITY_FLOWS = 2 (p05) means 2 flows passes the floor. Both reached Belgium, which is new to the network (Tier 1). Low confidence but technically valid detections.
 
 ---
 
@@ -390,8 +392,8 @@ This is a real limitation of the combined-channel approach and demonstrates exac
 | Statistical threshold | 3σ (0.1% FP rate) | Industry standard, consistent across all rules | 2σ (too many FPs), 4σ (misses real anomalies) |
 | BotNet threshold | p05 of interval std | Distribution right-skewed — mean−Nσ goes negative | CV (ranges overlap in our data) |
 | Geo tier 1 | Global network set | Network-wide never-seen countries are strong signal | Per-IP new country (163 FPs) |
-| Geo tier 2 | ≥ 10 new countries per IP | Separates CDN noise (1–3 new) from real new reach (25–30 new) | Any new country (163 FPs) |
-| Intensity filter | MIN_INTENSITY_FLOWS = 5 | Suppress one-off CDN edge lookups (Elastic, Active Countermeasures standard) | None (kept .175, .189 which are CDN) |
+| Geo tier 2 | ≥ 15 new countries per IP (p95 of training) | Data-derived upper bound; any client reaching more new countries than 95% of all training clients ever contacted is flagged | Any new country (163 FPs) |
+| Intensity filter | MIN_INTENSITY_FLOWS = 2 (p05 per-IP-per-country) | Data-derived floor; below this, contacts are CDN noise | Hardcoded 5 (filtered out .175, .189 which ARE Tier-1 valid) |
 | HTTPS dual rule | volume OR PCR | PCR catches low-and-slow; volume catches bulk dumps | Volume only (misses .78, .128, .117) |
 | HTTPS PCR vs down/up ratio | PCR (normalised) | Algebraically equivalent (Pearson −0.9992), flags identical 9 IPs; PCR is industry standard | down/up ratio (redundant) |
 | DNS threshold | mean + 3σ on flow count | Consistent with all other volume-based rules | Per-query-size (no payload data available) |
@@ -404,7 +406,8 @@ This is a real limitation of the combined-channel approach and demonstrates exac
 | Iteration | What happened | Fix |
 |---|---|---|
 | Geo rule v1 | 163 of 198 clients flagged → 82% FP rate | Two-tier approach (global set + per-IP extreme) |
-| Geo rule v2 | .175 and .189 still included with 1–2 Belgium flows | MIN_INTENSITY_FLOWS = 5 filter |
+| Geo rule v2 | Threshold hardcoded at 10 — not data-derived, spec violation | Replaced with p95 of per-IP country count (= 15); .11 and .93 no longer flagged |
+| Geo intensity filter | MIN_INTENSITY_FLOWS hardcoded at 5 — not data-derived | Replaced with p05 of per-IP-per-country flows (= 2); .175 and .189 now correctly flagged via Tier 1 |
 | BotNet threshold v1 | mean − 3σ → negative threshold, flags everything | Switched to p05 |
 | CV for beaconing | Ranges overlap 3.7–16.6 for beacons vs 3.93–25.52 for normal | Rejected, kept p05 interval std |
 | DNS exfiltration | Tried to flag by FQDN entropy — dataset has no subdomain data | Limited to volume + public-DNS sub-rules |
@@ -475,8 +478,8 @@ No false negatives. All unflagged devices are cleanly below every threshold.
 | 192.168.101.197 | MEDIUM | HTTPS Exfil (138 MB, 3.9σ) |
 | 192.168.101.125 | MEDIUM | New Geo (25 new countries incl. RU, IR) |
 | 192.168.101.36  | MEDIUM | New Geo (29 new countries) |
-| 192.168.101.11  | MEDIUM | New Geo (new device, 10 countries) |
-| 192.168.101.93  | MEDIUM | New Geo (new device, 11 countries) |
+| 192.168.101.175 | MEDIUM | New Geo (BE only, Tier 1, 4 flows) |
+| 192.168.101.189 | MEDIUM | New Geo (BE only, Tier 1, 2 flows) |
 | 192.168.101.32  | MEDIUM | BotNet (HTTPS ~99 s, DNS 5 s) |
 | 192.168.101.160 | MEDIUM | BotNet (HTTPS ~104 s, DNS 5 s) |
 | 192.168.101.148 | MEDIUM | DNS Volume (5.0 s interval, not caught by Botnet — see Step 6 limitation) |
@@ -494,7 +497,7 @@ No false negatives. All unflagged devices are cleanly below every threshold.
 2. **DNS C&C beaconers (5 s)**: `.41`, `.23`, `.201`, `.148` — malware polling C2 via internal DNS relay
 3. **HTTPS C&C beaconers (~100 s)**: `.117`, `.72`, `.32`, `.160`, `.188`, `.201` — same malware family
 4. **Dual-channel**: `.201` (DNS + HTTPS beacon), `.207` (HTTPS exfil + DNS beacon)
-5. **New devices**: `.11`, `.93` — zero training rows, immediately contact 10+ countries
+5. **New Geo (Tier 1 — new-to-network)**: `.167`, `.175`, `.189` — all contacted Belgium (BE), a country not seen in training; `.175` (4 flows) and `.189` (2 flows) are borderline but survive the data-derived intensity floor
 6. **Upload-dominant externals**: `.61`, `.64`, `.174` — push more data toward corporate server than normal
 7. **Download-dominant externals**: `.182`, `.210` — bulk data retrieval anomaly
 
@@ -536,7 +539,7 @@ No false negatives. All unflagged devices are cleanly below every threshold.
          ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Docker: wazuh.dashboard (172.100.0.10:443)                         │
-│  DQL filter: rule.id: 100201 → 28 hits                              │
+│  DQL filter: rule.id: 100201 → 27 hits                              │
 │  Fields: data.srcip, rule.level=7, decoder.name=ueba_alarm          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -621,13 +624,13 @@ After editing: `docker exec wazuh.manager /var/ossec/bin/wazuh-control restart`
 1. `cd Wazuh && docker-compose up -d` — start 4 containers
 2. `python3 ueba.py` — runs full analysis and sends syslog alerts
 3. Open `https://localhost:443`, login, navigate Security Events → Events
-4. Apply DQL filter `rule.id: 100201` → 28 hits visible
+4. Apply DQL filter `rule.id: 100201` → 27 hits visible
 
 ### What to show in the report (SIEM section)
 
 1. `send_syslog_alert()` function code
 2. Terminal output showing `→ Alarm UEBA x.x.x.x` lines
-3. Wazuh Dashboard screenshot: DQL filter, 28 hits, `data.srcip` field showing flagged IPs
+3. Wazuh Dashboard screenshot: DQL filter, 27 hits, `data.srcip` field showing flagged IPs
 4. Written answer — *"What can you conclude about the usage of such a rule in a real environment?"*:
 
 > In a production environment, the Wazuh manager runs on a dedicated security server. Any monitoring tool — including a UEBA script — can send alerts over UDP/514 without requiring a Wazuh agent on the monitoring machine. The decoder normalises the message into structured fields (`srcip`) that Wazuh can correlate with other rules, feed into dashboards, trigger active responses (e.g. firewall blocks), or forward to ticketing systems. This makes the integration protocol-agnostic: the UEBA module needs no knowledge of Wazuh internals, only the IP and port of the manager. One practical limitation: UDP syslog has no delivery acknowledgement, so alerts may be silently lost under congestion; TCP syslog or a Wazuh agent would be preferred for production.

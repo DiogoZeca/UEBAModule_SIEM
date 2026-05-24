@@ -141,11 +141,13 @@ The dictionary compute_baselines() returns contains one key per metric below. Ea
 ## Threshold table
 All thresholds are derived dynamically from the training data. The script prints them at startup:
 ```
-HTTPS upload threshold:  116.6 MB   (mean+3σ)
-HTTPS PCR threshold:     -0.7918    (mean=-0.8046  std=0.0043)
-DNS flow threshold:      1399 flows (mean+3σ)
-BotNet interval p05:     1741.9
-External ratio window:   [8.3817, 8.6226]
+HTTPS upload threshold:     116.6 MB         (mean+3σ)
+HTTPS PCR threshold:        -0.7918          (mean=-0.8046  std=0.0043)
+DNS flow threshold:         1399 flows       (mean+3σ)
+BotNet interval p05:        1741.9
+External ratio window:      [8.3817, 8.6226]
+Geo new-country threshold:  15 countries     (p95 per-IP in training)
+Geo min intensity flows:    2 flows          (p05 per-IP-per-country)
 ```
 Each threshold targets a different dimension of behaviour. 
 - The HTTPS upload threshold (116.6 MB) defines the maximum total data a normal internal client sends over HTTPS in a day — anything above this suggests bulk data exfiltration. 
@@ -271,29 +273,31 @@ A naive per-IP new-country rule is completely blind to this and produces noise, 
 ### Code Implementation
 To solve the false positive problem, we replaced the naive approach with a two-tier detection strategy:
 - Tier 1 (global): flag any client reaching a country that no client in the entire network contacted during training. Any access to these is immediately anomalous at the network level — not just new to the individual device, but new to the whole organisation.
-- Tier 2 (per-IP): flag clients that contact 10 or more new-to-them countries in the test period. CDN rotation typically adds 1–3 new countries per day naturally. A device reaching 10+ new countries is not experiencing CDN noise — it is actively communicating with fundamentally new infrastructure.
+- Tier 2 (per-IP): flag clients that contact 15 or more new-to-them countries in the test period. The threshold is data-derived: p95 of per-IP unique country counts in training equals 15, meaning any device reaching more new countries than 95% of all clients ever contacted during training is flagged. CDN rotation typically adds 1–3 new countries naturally — well below this floor.
 ```python
 new_to_network = test_countries - global_train_countries  # Tier 1
 new_to_ip      = test_countries - known_countries         # Tier 2
 
 if new_to_network and flows_to_new >= MIN_INTENSITY_FLOWS:
       # fire Tier 1 alert
-if len(new_to_ip) >= 10 and flows_to_new >= MIN_INTENSITY_FLOWS:
+if len(new_to_ip) >= 15 and flows_to_new >= MIN_INTENSITY_FLOWS:
       # fire Tier 2 alert
 ```
-The set difference operation is the core of both tiers — subtracting the known country sets from the observed ones leaves only the genuinely new destinations. The MIN_INTENSITY_FLOWS = 5 filter requires at least 5 flows to new-country IPs before an alert fires, suppressing one-off CDN edge-node lookups that would otherwise survive both tiers.
+The set difference operation is the core of both tiers — subtracting the known country sets from the observed ones leaves only the genuinely new destinations. The MIN_INTENSITY_FLOWS = 2 filter is data-derived from the p05 of per-IP-per-country flow counts in training — the minimum a real contact produces. Any new-country access with fewer flows than this floor is CDN noise.
 A third detection dimension was implemented and removed before finalising this rule: ASN (Autonomous System Number) detection. The hypothesis was that a compromised device contacting a new cloud provider or hosting company is suspicious even if the destination country is already known — a device that always used AWS might suddenly start reaching a Russian hosting ASN, which a country-only rule would miss if Russia was already in the training set. ASN lookups were implemented alongside country lookups using a separate GeoIP database (geodbasn.asn(ip).autonomous_system_organization), and an asns_per_ip dict was built in the same structure as countries_per_ip. Applied to the test data, the set of IPs flagged by new-ASN detection overlapped exactly with those flagged by new-country detection — the two dicts had identical key sets and the union set(countries) | set(asns) reduced to set(countries) alone. The ASN lookups added approximately 2.2 seconds of overhead per run with zero additional detections, and were removed.
 ### Results
 The two-tier approach with the intensity filter produced 6 unique flagged IPs across 9 alerts (some IPs triggered both tiers):
 ```
-[ALERT] 192.168.101.11   +10 new countries  (0 known in training)
-[ALERT] 192.168.101.93   +11 new countries  (0 known in training)
 [ALERT] 192.168.101.125  +11 new to network, +25 new to IP  (incl. RU, IR, UA)
 [ALERT] 192.168.101.36   +17 new to network, +29 new to IP  (incl. RU, IR, IQ, KZ)
 [ALERT] 192.168.101.72   +15 new to network, +30 new to IP  (incl. RU, IR, UA)
 [ALERT] 192.168.101.167  +1 new to network  (BE only, 9 flows)
+[ALERT] 192.168.101.175  +1 new to network  (BE only, 4 flows)
+[ALERT] 192.168.101.189  +1 new to network  (BE only, 2 flows)
 ```
-The most striking results are .11 and .93 — both had zero rows in the training file. These devices did not exist on the network during the training period, and on the test day they immediately contacted 10 and 11 countries respectively. A brand new device appearing on the network and reaching out to multiple countries from day one is suspicious regardless of which countries are involved. .125, .36, and .72 are the highest confidence cases — they triggered both tiers, reaching countries the entire network had never contacted in training, including Russia, Iran, Ukraine, and Kazakhstan. .167 is the most borderline result: it triggered only Tier 1 with a single new country (Belgium), 9 flows, and 73 KB — low confidence, but it survived the intensity filter and was kept deliberately to avoid silently dropping a genuine signal.
+The .125, .36, and .72 are the highest confidence cases — they triggered both tiers, reaching countries the entire network had never contacted in training, including Russia, Iran, Ukraine, and Kazakhstan. The three most borderline results are .167, .175, and .189 — each triggered only Tier 1 with a single new country (Belgium), with 9, 4, and 2 flows respectively. A single new-country contact with very few flows sits at the edge of what can be distinguished from a CDN edge rotation. All three survived the data-derived intensity floor (≥ 2 flows, p05 of training) and were retained to avoid silently discarding a genuine signal, but they warrant the most analyst scrutiny of any detection in the dataset.
+
+Two devices flagged under the previous hardcoded threshold (.11 and .93, each with 10–11 new-to-IP countries) are no longer flagged. Both fall below the data-derived Tier-2 threshold of 15, and their destinations were all countries already present in the training network — so Tier 1 did not apply either. The data-derived threshold produces a more defensible boundary.
 
 
 ## DNS Anomaly Detection
@@ -377,33 +381,36 @@ Running the full detection pipeline against the test dataset produced 27 unique 
     - Internal (192.168.101.x): 22
     - External (188.83.72.x): 5
 
-  [HIGH  ] 192.168.101.117  →  detect_https_exfiltration | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.188  →  detect_https_exfiltration | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.201  →  detect_dns_anomalies | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.207  →  detect_https_exfiltration | detect_dns_anomalies
+  -- HIGH confidence (2+ independent rules) --
   [HIGH  ] 192.168.101.23   →  detect_dns_anomalies | detect_botnet_beaconing
   [HIGH  ] 192.168.101.41   →  detect_dns_anomalies | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.201  →  detect_dns_anomalies | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.207  →  detect_https_exfiltration | detect_dns_anomalies
+  [HIGH  ] 192.168.101.117  →  detect_https_exfiltration | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.188  →  detect_https_exfiltration | detect_botnet_beaconing
   [HIGH  ] 192.168.101.72   →  detect_new_geo_destinations | detect_botnet_beaconing
+
+  -- MEDIUM confidence (single rule) --
+  [MEDIUM] 192.168.101.187  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.14   →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.208  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.26   →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.197  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.78   →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.128  →  detect_https_exfiltration
+  [MEDIUM] 192.168.101.148  →  detect_dns_anomalies
+  [MEDIUM] 192.168.101.32   →  detect_botnet_beaconing
+  [MEDIUM] 192.168.101.160  →  detect_botnet_beaconing
+  [MEDIUM] 192.168.101.125  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.36   →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.167  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.175  →  detect_new_geo_destinations
+  [MEDIUM] 192.168.101.189  →  detect_new_geo_destinations
+  [MEDIUM] 188.83.72.61     →  detect_external_anomalies
+  [MEDIUM] 188.83.72.64     →  detect_external_anomalies
   [MEDIUM] 188.83.72.174    →  detect_external_anomalies
   [MEDIUM] 188.83.72.182    →  detect_external_anomalies
   [MEDIUM] 188.83.72.210    →  detect_external_anomalies
-  [MEDIUM] 188.83.72.61     →  detect_external_anomalies
-  [MEDIUM] 188.83.72.64     →  detect_external_anomalies
-  [MEDIUM] 192.168.101.11   →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.125  →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.128  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.14   →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.148  →  detect_dns_anomalies
-  [MEDIUM] 192.168.101.160  →  detect_botnet_beaconing
-  [MEDIUM] 192.168.101.167  →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.187  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.197  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.208  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.26   →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.32   →  detect_botnet_beaconing
-  [MEDIUM] 192.168.101.36   →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.78   →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.93   →  detect_new_geo_destinations
 ```
 
 ## False Negative Check
@@ -434,7 +441,7 @@ The 192.168.101.117 is the most notable entry: its upload volume of 1.2 MB is we
 
 
 ## Attack Patterns
-Grouping the 27 flagged devices by behaviour reveals nine distinct attack patterns active in the test period:
+Grouping the 27 flagged devices by behaviour reveals eight distinct attack patterns active in the test period:
 
 | Pattern | Devices | Description |
 |----------|---------|-------------|
@@ -444,8 +451,7 @@ Grouping the 27 flagged devices by behaviour reveals nine distinct attack patter
 | DNS C&C Beaconing | .41, .23, .201, .148 | Exact 5.0s query interval to internal resolvers - malware heartbeat routed through internal DNS relay |
 | HTTPS C&C Beaconing | .117, .72, .32, .160, .188, .201 | Check-in intervals clustering between 99-104s across six independent devices - single malware family, shared hardcoded timer |
 | Dual-Channel implant | .201, .207 | Simultaneous DNS beaconing and HTTPS activity - two independent C&C channels or exfiltration running alongside beaconing |
-| New Device, immediate broad reach | .11, .93 | Zero rows in training, contacted 10-11 countries on first observed day - rogue or newly compromised device |
-| Geo Expansion — known devices | .125, .36, .167 | Devices with training history that suddenly contacted new countries unreachable by any client in training — .125 and .36 reached RU, IR, IQ, KZ across 25–29 new countries; .167 triggered Tier 1 with a single new country (BE, 9 flows) |
+| Geo Expansion | .125, .36, .167, .175, .189 | Devices that contacted countries new to the entire network — .125 and .36 triggered both tiers with 25–29 new countries including RU, IR, IQ, KZ; .167, .175, and .189 triggered Tier 1 only with a single new country (Belgium), with 9, 4, and 2 flows respectively — the most borderline detections in the dataset |
 | External upload anomaly | .61, .64, .174, .182, .210 | External clients breaking the tight 8.50 ratio invariant - three uploading more than normal, two downloading more than normal |
 
 

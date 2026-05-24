@@ -84,11 +84,15 @@ Nothing is printed or flagged here — this function only computes and returns. 
 ---
 
 ### Step 4 — `detect_new_geo_destinations()`
-**Detects:** Internal clients contacting servers in countries or ASNs never seen in training.  
+**Detects:** Internal clients contacting countries anomalous at the network level or individually.  
 **Data:** `internal_train1` (baseline) → `internal_test1` (detection).  
-**Metric:** Set of destination countries (ISO codes) and ASNs per `src_ip`, derived via geoip2 lookups on `dst_ip`.  
-**Logic:** For each internal client, build the set of countries/ASNs contacted during training. In the test data, flag any client that contacts a country or ASN not present in its own training set.  
-**Why this works:** A compromised device being controlled remotely or exfiltrating to a new infrastructure will reach destinations the device never contacted before.
+**Metric:** Set of destination countries (ISO codes) per `src_ip`, derived via geoip2 lookups on `dst_ip`.  
+**Logic:** Two-tier approach (naive per-IP new-country produced 82% FP due to CDN rotation):
+- **Tier 1 (global):** flag any client reaching a country that *no* client in the entire network contacted during training. New-to-network access is immediately anomalous regardless of which device triggered it.
+- **Tier 2 (per-IP):** flag any client that contacts ≥10 countries new to it in the test period. CDN rotation adds 1–3 new countries naturally; ≥10 signals active reach to new infrastructure.
+- Both tiers require `MIN_INTENSITY_FLOWS = 5` flows to new-country IPs before firing, suppressing one-off CDN edge lookups.
+
+**Why this works:** A compromised device reaching new foreign infrastructure (C2 server, exfiltration endpoint) will contact countries the device — or the whole network — never reached during the training period. ASN detection was evaluated and removed: it flagged the identical set of IPs as country detection with 2.2 s of overhead and zero additional detections.
 
 ---
 
