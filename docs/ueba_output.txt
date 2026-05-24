@@ -10,7 +10,7 @@
     DNS flow threshold      : 1399 flows  (mean+3σ)
     BotNet interval p05     : 1741.9
     External ratio window   : [8.3817, 8.6226]
-    Internal DNS servers    : {'192.168.101.229', '192.168.101.226'}
+    Internal DNS servers    : {'192.168.101.226', '192.168.101.229'}
     Geo new-country threshold: 15 countries  (p95 per-IP in training)
     Geo min intensity flows  : 2 flows      (p05 per-IP-per-country)
 
@@ -27,8 +27,14 @@
     DE       1,623 flows      18.2 MB  (0.3%)
     ...      2,808 flows  (26 other countries)
 
+[*] Network characterisation — internal HTTPS destination split:
+    Destination                    Flows   Up/client   Down/client   Ratio mean   Ratio std
+    Internal server (.240)       157,055        9.0MB         83.2MB       9.2255      0.5809
+    External HTTPS servers       627,522       36.1MB        333.6MB       9.2460      0.2511
+
 [*] Network characterisation — external inter-flow intervals:
     mean=807.6s  median=104.0s  std=11879.4s  p90=191.0s  p95=3475.0s
+    per-client interval std p05=2132.6s  (characterisation only — see compute_baselines)
 
 ═══════════════════════════════════════════════════════
   Step 2 — detect_external_anomalies()

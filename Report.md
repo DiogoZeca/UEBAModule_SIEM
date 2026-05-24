@@ -11,7 +11,7 @@ Project: UEBA Module for SIEM | Universidade de Aveiro
 # Introduction 
 
 ### UEBA (User and Entity Behavior Analytics) 
-UEBA is a security approach that builds statistical profiles of normal behaviour from historical data and uses them to flag deviations in new observations. Unlike signature-based detection, which looks for known attack patterns, UEBA detects anomalies - devices or users behaving in ways inconsistent with their own established baseline. This makes it effective against novel threats and insider attacks that leave no known signature.
+UEBA is a security approach that builds statistical profiles of normal behaviour from historical data and uses them to flag deviations in new observations. Unlike signature-based detection, which looks for known attack patterns, UEBA detects anomalies — devices or users behaving in ways inconsistent with their own established baseline. This makes it effective against novel threats and insider attacks that leave no known signature.
 
 ### GOAL
 The goal of this project is to implement a UEBA module. The module reads network flow data, computes per-IP statistical baselines from a training dataset, applies a set of anomaly detection rules to a test dataset, and forwards any flagged alerts to the Wazuh manager via syslog. The full pipeline runs as a single Python script — ueba.py — that produces a consolidated report of anomalous devices and their confidence levels.
@@ -47,7 +47,7 @@ We concluded that the test files are larger than the training files in both case
 
 
 ## Protocols and Ports
-The first thing we explored after loading was what kind of traffic actually exists in the dataset. Grouping by port across the entire internal training file reveals something immediately striking — only two ports exist: TCP/443 (HTTPS) and UDP/53 (DNS). No other protocols, no other ports, anywhere in the dataset.
+The first thing we explored after loading was what kind of traffic actually exists in the dataset. Grouping by port across the entire internal training file reveals something immediately striking — only two ports exist: TCP/443 (HTTPS) and UDP/53 (DNS). No other protocols, no other ports, anywhere in the dataset. The external dataset contains only TCP/443 — no DNS traffic at all, consistent with external clients communicating exclusively with the corporate public server.
 
 Code used:
 ```python
@@ -68,6 +68,15 @@ Inspecting the data, grouping the internal data by destination IP, three interna
 | HTTPS Server | 192.168.101.240 | 443 |
 
 Every one of the 198 internal clients communicates with all three servers during training — zero exceptions. This uniformity is itself a baseline: the network behaves like a corporate environment where all machines follow the same configuration. Any device that deviates from this pattern in the test period stands out immediately.
+
+Internal HTTPS traffic (port 443) does not all go to the same place. Grouping training flows by destination IP reveals two distinct populations: traffic to the internal HTTPS server (.240) and traffic to external HTTPS servers. Both groups were characterised separately:
+
+| Destination            | Flows   | Up (mean/client) | Down (mean/client) | Ratio mean | Ratio std |
+|-----------------------|---------|------------------|--------------------|------------|-----------|
+| Internal server .240   | 157,055 | 9.0 MB           | 83.2 MB            | 9.2255     | 0.5809    |
+| External HTTPS servers | 627,522 | 36.1 MB          | 333.6 MB           | 9.2460     | 0.2511    |
+
+External HTTPS servers account for 80% of all HTTPS flows. Both groups maintain nearly identical down/up ratios (~9.23 vs ~9.25), confirming that the ratio is a structural property of the connection type rather than a destination-specific artefact. The combined per-client upload mean of ~45 MB is the direct sum of the two groups (9 MB to .240 + 36 MB to external). This validates using the combined aggregate as the baseline for the HTTPS exfiltration rule — the two populations are statistically homogeneous on the ratio dimension.
 
 
 ## DNS Invariant
@@ -96,7 +105,7 @@ The external dataset contains clients from the 188.83.72.x subnet connecting to 
 | Min | 8.40 |
 | Max | 8.61 |
 
-A standard deviation of 0.04 on a ratio of 8.50 means the server returns almost exactly 8.5× what each client uploads, consistently, across every external user. This is the tightest baseline in the entire dataset. It tells us the corporate server behaves very predictably — which means any external client that breaks this pattern in the test period is doing something genuinely unusual, not just natural variation. A 3σ window of [8.38, 8.62] is enough to catch real anomalies with very few false positives.
+A standard deviation of 0.04 on a ratio of 8.50 means each client downloads almost exactly 8.5× what it uploads, consistently, across every external user. This is the tightest baseline in the entire dataset. It tells us the corporate server behaves very predictably — which means any external client that breaks this pattern in the test period is doing something genuinely unusual, not just natural variation. A 3σ window of [8.38, 8.62] is enough to catch real anomalies with very few false positives.
 
 The script also characterised the external inter-flow intervals during baseline computation:
 
@@ -150,16 +159,16 @@ Geo new-country threshold:  15 countries     (p95 per-IP in training)
 Geo min intensity flows:    2 flows          (p05 per-IP-per-country)
 ```
 Each threshold targets a different dimension of behaviour. 
-- The HTTPS upload threshold (116.6 MB) defines the maximum total data a normal internal client sends over HTTPS in a day — anything above this suggests bulk data exfiltration. 
+- The HTTPS upload threshold (116.6 MB) defines the maximum total data a normal internal client sends over HTTPS in a day — anything above this suggests bulk data exfiltration. The threshold is derived from combined HTTPS traffic (internal .240 + external servers). The destination split characterised above shows both groups have identical ratios (~9.23), so the combined aggregate is a valid baseline — the 45 MB mean is simply the sum of 9 MB to .240 and 36 MB to external servers.
 - The HTTPS PCR threshold (−0.7918) measures the upload/download balance: PCR (Producer-Consumer Ratio) is defined as (up_bytes − down_bytes) / (up_bytes + down_bytes) and ranges from −1 (pure download) to +1 (pure upload). A normal HTTPS session is download-dominant — the server returns HTML, images, files — so the training mean sits at −0.8046. A device that uploads far more than it downloads pushes PCR toward 0 or positive, which is the fingerprint of data exfiltration even when the total volume is still low. 
 - The DNS flow count threshold (1,399 flows) flags clients generating an abnormal number of DNS queries — the primary signal for DNS-based C&C beaconing.
-- The BotNet interval std (1,741.9 s) is a floor: any client whose inter-flow timestamps are more regular than the least regular normal client in training is beaconing at a fixed interval, consistent with malware checking in with a C&C server. 
+- The BotNet interval std (1,741.9 s) is a floor: any client whose inter-flow timing is more regular than 95% of all normal clients in training is beaconing at a fixed interval, consistent with malware checking in with a C&C server. 
 - The external ratio window ([8.3817, 8.6226]) defines the expected down/up range for external clients — a symmetric band around the training mean of 8.50. Any external client outside this window is interacting with the corporate server in an anomalous way.
 
 
 ## The 3σ Rule
 The choice of 3σ as the threshold is an industry standard in statistical anomaly detection. Under a normal distribution, 99.9% of observations fall within 3 standard deviations of the mean — meaning only 0.1% of legitimate traffic would be flagged as anomalous by chance. This gives a good balance between sensitivity (catching real anomalies) and specificity (avoiding false positives). Applied consistently across all volume-based rules, it means the thresholds adapt automatically to the dataset: a network with higher baseline DNS traffic will produce a higher DNS threshold, and a network with tighter HTTPS upload patterns will produce a lower upload threshold. No manual tuning required.
-To make this concrete for this dataset: with 198 internal clients, a 0.1% false-positive rate per rule means roughly 0.2 false positives per rule per day in the worst case — one spurious alert every five days, easily manageable for a security analyst. The alternatives were evaluated and rejected: 2σ (97.7% coverage) would produce approximately 4 false positives per rule per day, creating a noise floor that drowns real signals; 4σ (99.994% coverage) would set the bar so high that moderate exfiltration — a device uploading 200 MB when the mean is 45 MB — would go undetected. The 3σ choice is consistent with published guidance from SIEM vendors (Elastic, Splunk, Wazuh) and the academic literature on statistical anomaly detection for network traffic.
+To make this concrete for this dataset: with 198 internal clients, a 0.1% false-positive rate per rule means roughly 0.2 false positives per rule per day in the worst case — one spurious alert every five days, easily manageable for a security analyst. The alternatives were evaluated and rejected: 2σ (97.7% coverage) would produce approximately 4 false positives per rule per day, creating a noise floor that drowns real signals; 4σ (99.9937% coverage) would set the bar so high that moderate exfiltration — a device uploading 200 MB when the mean is 45 MB — would go undetected. The 3σ choice is consistent with published guidance from SIEM vendors (Elastic, Splunk, Wazuh) and the academic literature on statistical anomaly detection for network traffic.
 
 
 ## Exception
@@ -224,6 +233,8 @@ The results revealed two groups:
 
 The 188.83.72.61 at 6.7σ is the most extreme anomaly in the entire external dataset — its ratio of 8.232 is almost 7 standard deviations below the training mean, making it the clearest single signal of the five.
 
+A second detection signal was implemented and evaluated before finalising this rule. Since compute_baselines() already computes the per-client inter-flow interval distribution for characterisation, the p05 of per-client interval standard deviation (2,132.6 s) was added as a second threshold alongside the ratio: any external client whose inter-flow interval std fell below this floor — more regular than 95% of all training clients — would also be flagged, using OR logic. Applied to the test data, this produced 25 flagged IPs instead of 5. The additional 20 were triggered exclusively by the interval signal with completely normal ratios (0.1–1.8σ from mean). The problem is statistical: a p05 floor applied to 196 test clients produces approximately 10 false positives by chance alone, and the borderline interval-only hits (iv_std ranging 1,839–2,130 s against a floor of 2,132.6 s) are too marginal to be convincing detections. The ratio signal, by contrast, produces clean separation — 4–7σ deviations with no ambiguous borderline cases. The interval signal was removed and the floor retained as characterisation output only.
+
 
 ## Internal Anomaly Detection (HTTPS Exfiltration)
 ### What to look for
@@ -262,7 +273,7 @@ The rule flagged 10 internal IPs:
 [ALERT] 192.168.101.117  upload=1.2 MB     deviation=-1.8σ   triggered_by=PCR
 ```
 The first five devices were caught by both signals — their uploads range from 138 MB to 7.6 GB, orders of magnitude above the 116.6 MB threshold. .207 was caught by volume only, sitting just above the threshold at 119 MB with a PCR still below the trigger point. 
-The most interesting cases are the last four — flagged by PCR alone, with upload volumes below the training mean of 45 MB. A volume-only rule would have missed all of them entirely. .117 is the clearest example: it uploaded only 1.2MB that day, yet almost nothing came back in response — PCR = −0.783, well above the threshold of −0.7918. This is the low-and-slow fingerprint: a device quietly pushing data with no meaningful download activity, invisible to volume detection but fully exposed by the upload/download balance.
+The most interesting cases are the last four — flagged by PCR alone, with upload volumes below the training mean of 45 MB. A volume-only rule would have missed all of them entirely. .117 is the clearest example: it uploaded only 1.2 MB that day and received back only ~9.9 MB in return — a down/up ratio of ~8.2, noticeably below the training baseline of ~9.2. This pushed PCR above the threshold: at −0.783 versus the training mean of −0.8046, it was uploading proportionally more relative to its downloads than any legitimate client in training, despite the low absolute volume. This is the low-and-slow fingerprint: a device whose upload size is invisible to volume detection but whose upload/download imbalance is fully exposed by PCR.
 
 
 ## GeoDestination Anomaly Detection
@@ -375,7 +386,7 @@ This is a real limitation of the combined-channel approach, but it also demonstr
 
 # Final Results 
 ## Final output
-Running the full detection pipeline against the test dataset produced 27 unique anomalous IPs — 22 internal clients (192.168.101.x) and 5 external clients (188.83.72.x). Each flagged IP was assigned a confidence level based on how many independent rules triggered it: HIGH when two or more rules agree on the same device, MEDIUM when only one rule fires. The two-level scheme is not arbitrary — when a single rule flags a device, there is always a small residual probability of a false positive; when two completely independent detection methods (operating on different metrics, different protocols, different statistical approaches) both flag the same IP on the same day, the probability of a coincidental double false positive is the product of the individual rates, dropping to approximately 0.01% per device. The 7 HIGH confidence IPs are therefore treated as confirmed compromised devices. The 20 MEDIUM confidence IPs are genuine anomalies that warrant investigation but cannot be confirmed by corroboration alone.
+Running the full detection pipeline against the test dataset produced 27 unique anomalous IPs — 22 internal clients (192.168.101.x) and 5 external clients (188.83.72.x). Each flagged IP was assigned a confidence level based on how many independent rules triggered it: HIGH when two or more rules agree on the same device, MEDIUM when only one rule fires. The two-level scheme is not arbitrary — when a single rule flags a device, there is always a small residual probability of a false positive; when two completely independent detection methods (operating on different metrics, different protocols, different statistical approaches) both flag the same IP on the same day, the probability of a coincidental double false positive is the product of the individual rates, dropping to approximately 0.0001% per device (0.1% × 0.1% = one in a million). The 7 HIGH confidence IPs are therefore treated as confirmed compromised devices. The 20 MEDIUM confidence IPs are genuine anomalies that warrant investigation but cannot be confirmed by corroboration alone.
 ```
  Total Unique Anomalous IPs: 27
     - Internal (192.168.101.x): 22
@@ -447,7 +458,7 @@ Grouping the 27 flagged devices by behaviour reveals eight distinct attack patte
 |----------|---------|-------------|
 | Mass HTTPS Exfiltration | .187, .14, .208 | 4.4-7.6 GB uploaded in a single day, 182-316σ above baseline - bulk data dumps, likely automated |
 | Moderate HTTPS Exfiltration | .197, .26 | 138–259 MB uploaded — above the 116.6 MB threshold by 3.9–9σ, triggered by both volume and PCR |
-| Low-and-Slow Exfiltration | .117, .78, .128, .188 | Upload Volumes below the training mean, caught only by PCR - covert, sustained data leakage |
+| Low-and-Slow Exfiltration | .117, .78, .128, .188 | Upload volumes below the training mean, caught only by PCR — covert, sustained data leakage |
 | DNS C&C Beaconing | .41, .23, .201, .148 | Exact 5.0s query interval to internal resolvers - malware heartbeat routed through internal DNS relay |
 | HTTPS C&C Beaconing | .117, .72, .32, .160, .188, .201 | Check-in intervals clustering between 99-104s across six independent devices - single malware family, shared hardcoded timer |
 | Dual-Channel implant | .201, .207 | Simultaneous DNS beaconing and HTTPS activity - two independent C&C channels or exfiltration running alongside beaconing |
@@ -488,7 +499,7 @@ The decoder (/var/ossec/etc/decoders/local_decoder.xml) identifies the message b
 
   <decoder name="ueba_alarm_fields">
     <parent>ueba_alarm</parent>
-    <regex offset="after_parent">(\d+.\d+.\d+.\d+)</regex>
+    <regex offset="after_parent">(\d+\.\d+\.\d+\.\d+)</regex>
     <order>srcip</order>
   </decoder>
 ```
@@ -503,7 +514,7 @@ The decoder (/var/ossec/etc/decoders/local_decoder.xml) identifies the message b
     </rule>
   </group>
 ```
-Level 7 in Wazuh means "important event requiring analyst review" — the lowest severity that appears in the Security Events dashboard by default. 
+In Wazuh's rule classification, level 7 corresponds to "bad word matching" — a keyword or pattern match on log content. It sits above the default log threshold of level 3, ensuring the alert is generated, indexed, and visible in the Security Events dashboard without requiring a severity escalation to a higher level. 
 Rule ID 100201 is explicitly prescribed by the spec; the 100xxx namespace is reserved for user-defined rules, and the 2xx suffix distinguishes this UEBA exercise from earlier ones in the guide.
 
 
@@ -514,6 +525,6 @@ With the Wazuh stack running (docker compose up -d) and all 27 syslog packets de
 ## Conclusion
 This integration pattern — an external tool sending "Alarm UEBA <ip>" over UDP syslog — demonstrates that any monitoring system can feed alerts into a SIEM without requiring a Wazuh agent on the monitoring machine. The Wazuh manager acts as a centralised collection point: once the decoder and rule are in place, any source that speaks syslog can contribute structured, queryable events to the same dashboard used for all other security monitoring.
 
-In a production environment this has several practical implications. The flagged IPs stored in data.srcip can be correlated with alerts from other rules — for example, a device flagged by UEBA as beaconing that also triggers a firewall rule becomes a much stronger signal than either alone. The ueba_security_event group makes it trivial to build dashboards, set up email notifications, or trigger active responses such as automated firewall blocks for any IP that crosses a severity threshold. The UEBA module itself needs no knowledge of Wazuh internals — it only needs the manager's IP and port, keeping the two systems loosely coupled and independently deployable.
+In a production environment, this has several practical implications. The flagged IPs stored in data.srcip can be correlated with alerts from other rules — for example, a device flagged by UEBA as beaconing that also triggers a firewall rule becomes a much stronger signal than either alone. The ueba_security_event group makes it trivial to build dashboards, set up email notifications, or trigger active responses such as automated firewall blocks for any IP that crosses a severity threshold. The UEBA module itself needs no knowledge of Wazuh internals — it only needs the manager's IP and port, keeping the two systems loosely coupled and independently deployable.
 
 One limitation worth noting: UDP syslog provides no delivery acknowledgement. A packet dropped under network congestion is silently lost with no retry. For a production deployment where missing an alert is unacceptable, TCP syslog or a Wazuh agent on the monitoring host would be the preferred approach.
