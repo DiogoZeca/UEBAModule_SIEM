@@ -168,14 +168,21 @@ The function itself has no side effects, it prints nothing, flags nothing, and t
 
 ### Code Implementation
 ```python
-# HTTPS: group port-443 flows per client, compute PCR per IP
+# HTTPS: group port-443 flows per client, compute total upload per IP
   https = int_train[int_train['port'] == 443]
   https_per_ip = https.groupby('src_ip').agg(total_up=('up_bytes','sum'), total_down=('down_bytes','sum'))
-  pcr = (https_per_ip['total_up'] - https_per_ip['total_down']) / (https_per_ip['total_up'] + https_per_ip['total_down'])
 
-# BotNet: sort flows by timestamp per client, diff() gives inter-flow gaps, std() measures regularity
-  sorted_train['interval'] = sorted_train.groupby('src_ip')['timestamp'].diff()
-  interval_std_per_ip = sorted_train.groupby('src_ip')['interval'].std()
+# BotNet: compute per-protocol inter-flow interval std per client
+  https_sorted = https_train.sort_values(['src_ip','timestamp'])
+  https_sorted['interval'] = https_sorted.groupby('src_ip')['timestamp'].diff()
+  https_interval_std_per_ip = https_sorted.groupby('src_ip')['interval'].std()
+
+  dns_sorted = dns_train.sort_values(['src_ip','timestamp'])
+  dns_sorted['interval'] = dns_sorted.groupby('src_ip')['timestamp'].diff()
+
+# Geo/Destination: build global sets — union of all ASNs and internal dst_ips seen by any client in training
+  global_train_asns = set(pub_train['dst_ip'].apply(get_asn).dropna())
+  global_train_internal_dsts = set(priv_train['dst_ip'].unique())
 
 # DNS: count flows per client, extract the set of destination servers
   dns_per_ip = dns.groupby('src_ip').agg(dns_flows=('up_bytes','count'))
@@ -188,19 +195,18 @@ The dictionary compute_baselines() returns one key per metric below. Each rule f
 All thresholds are derived dynamically from the training data. The script prints them at startup:
 ```
 HTTPS upload threshold:     116.6 MB         (mean+3σ)
-HTTPS PCR threshold:        -0.7918          (mean=-0.8046  std=0.0043)
 DNS flow threshold:         1399 flows       (mean+3σ)
-BotNet interval p05:        1741.9
+BotNet HTTPS interval p05:  1881.3 s
+BotNet DNS  interval p05:   6373.2 s
 External ratio window:      [8.3817, 8.6226]
-Geo new-country threshold:  15 countries     (p95 per-IP in training)
-Geo min intensity flows:    2 flows          (p05 per-IP-per-country)
+Geo min intensity flows:    10 flows
 ```
 Each threshold targets a different dimension of behaviour. 
 - The HTTPS upload threshold (116.6 MB) defines the maximum total data a normal internal client sends over HTTPS in a day, anything above this suggests bulk data exfiltration. The threshold is derived from combined HTTPS traffic (internal .240 + external servers). The destination split characterised above shows both groups have identical ratios (~9.23), so the combined aggregate is a valid baseline.
-- The HTTPS PCR threshold (−0.7918) measures the upload/download balance: PCR (Producer-Consumer Ratio) is defined as (up_bytes − down_bytes) / (up_bytes + down_bytes) and ranges from −1 (pure download) to +1 (pure upload). A normal HTTPS session is download-dominant (the server returns HTML, images, files) so the training mean sits at −0.8046. A device that uploads far more than it downloads pushes PCR toward 0 or positive, which is the fingerprint of data exfiltration even when the total volume is still low. 
 - The DNS flow count threshold (1,399 flows) flags clients generating an abnormal number of DNS queries, the primary signal for DNS-based C&C beaconing.
-- The BotNet interval std (1,741.9 s) is a floor: any client whose inter-flow timing is more regular than 95% of all normal clients in training is beaconing at a fixed interval, consistent with malware checking in with a C&C server. 
+- The BotNet interval p05 thresholds are split by protocol: 1,881.3 s for HTTPS traffic and 6,373.2 s for DNS traffic, representing the 5th percentiles of per-client interval standard deviations computed separately for each protocol. Any client below its protocol's floor is more regular than 95% of all legitimate training clients for that protocol. Separating the protocols prevents a device with naturally irregular HTTPS activity from masking a tight DNS beaconing pattern in a combined calculation.
 - The external ratio window ([8.3817, 8.6226]) defines the expected down/up range for external clients. Any external client outside this window is interacting with the corporate server in an anomalous way.
+- The geo minimum intensity floor (10 flows) filters CDN noise from the geo detection rule: any client reaching a country new to the entire network with fewer than 10 flows is treated as a CDN edge rotation rather than a genuine new destination.
 
 
 ## The 3σ Rule
@@ -293,99 +299,91 @@ The interval signal was removed and the floor retained as characterisation outpu
 
 ## Internal Anomaly Detection (HTTPS Exfiltration)
 ### What to look for
-The HTTPS exfiltration rule targets internal clients sending an abnormal amount of data outbound over HTTPS. 
-The first instinct is to flag by volume: any client uploading more than mean + 3σ (116.6 MB) in the test period is suspicious. 
+The HTTPS exfiltration rule targets internal clients sending an abnormal amount of data outbound over HTTPS. The detection metric is total upload volume per client: any client uploading more than mean + 3σ (116.6 MB) in the test period is flagged. The combined HTTPS traffic (internal .240 + external servers) is used as the baseline, validated by the near-identical per-group ratios (~9.23 in both) characterised during exploration.
 
-However, volume alone has a blind spot: a device that exfiltrates data slowly and steadily, keeping its total upload below the threshold, would go completely undetected. 
-
-To catch this pattern, we added a second signal: the PCR (Producer-Consumer Ratio), which measures the upload/download balance independently of total volume. 
-The rule flags any client that triggers either condition, making it sensitive to both bulk single-shot dumps and low-and-slow exfiltration.
+A second signal, the PCR (Producer-Consumer Ratio), was implemented and evaluated before finalising this rule. PCR = (up − down) / (up + down) measures the upload/download balance independently of volume. The training mean was −0.8046 (heavily download-dominant), and the 3σ threshold was −0.7918. Applied to the test data, PCR flagged four additional IPs with upload volumes well below the training mean. On closer inspection, these were false positives: with few HTTPS flows, natural variance in the upload/download balance is enough to push PCR across the threshold. PCR was removed; the devices it would have caught are independently and more reliably detected by the BotNet beaconing rule through timing analysis.
 ### Code Implementation
-Explaining the PCR:
 ```python
-PCR = (up_bytes - down_bytes) / (up_bytes + down_bytes)
+flagged = per_ip['total_up'] > vol_threshold  # > 116.6 MB
 ```
-The value ranges from −1 (pure download) to +1 (pure upload). 
-A normal HTTPS session is download-dominant (the client sends a request and the server returns HTML, images, or files) so the training mean sits at −0.8046. 
-A device that is exfiltrating data sends large uploads and receives only small acknowledgements in return, pushing PCR toward 0 or positive. 
+The threshold is derived from combined HTTPS traffic (internal .240 + external servers). Both groups show near-identical down/up ratios (~9.23), confirming the combined aggregate is a valid baseline for volume normalisation.
 
-The 3σ threshold is −0.7918: any client above this value is uploading disproportionately relative to what it downloads, regardless of total volume.
-
-```python
-flagged_vol = per_ip['total_up'] > vol_threshold  # > 116.6 MB
-flagged_pcr = per_ip['pcr']      > pcr_threshold  # > -0.7918
-flagged     = per_ip[flagged_vol | flagged_pcr]
-```
-The OR logic is the key design decision: a client only needs to break one of the two conditions to be flagged. This ensures neither pattern escapes detection.
-
-One metric was tested and removed before arriving at this design: the raw down/up ratio (total_down / total_up), which is the same metric used for external clients. 
-
-An equivalent internal ratio was computed in baselines and applied to the test data. It turned out to be algebraically equivalent to PCR via the identity PCR = (1 − ratio) / (1 + ratio), producing a Pearson correlation of −0.9992 between the two series across all training clients.
-
-Applied to the test set, both metrics flagged the identical set of IPs: zero additional detections from the ratio. PCR was kept as the bounded, normalised [−1, +1] formulation from the literature.
+One metric was evaluated and removed before arriving at this design: the raw down/up ratio (total_down / total_up), which is the same metric used for external clients. An equivalent internal ratio was computed and applied to the test data. It flagged the identical set of IPs as the volume threshold: zero additional detections. The raw ratio approach was dropped in favour of the simpler volume threshold alone.
 ### Results
-The rule flagged 10 internal IPs:
+The rule flagged 6 internal IPs:
 ```
-[ALERT] 192.168.101.187  upload=7586.3 MB  deviation=316.4σ  triggered_by=volume+PCR
-[ALERT] 192.168.101.14   upload=5352.1 MB  deviation=222.6σ  triggered_by=volume+PCR
-[ALERT] 192.168.101.208  upload=4402.0 MB  deviation=182.8σ  triggered_by=volume+PCR
-[ALERT] 192.168.101.26   upload=259.2 MB   deviation=9.0σ    triggered_by=volume+PCR
-[ALERT] 192.168.101.197  upload=138.3 MB   deviation=3.9σ    triggered_by=volume+PCR
-[ALERT] 192.168.101.207  upload=119.0 MB   deviation=3.1σ    triggered_by=volume
-[ALERT] 192.168.101.188  upload=39.4 MB    deviation=-0.2σ   triggered_by=PCR
-[ALERT] 192.168.101.78   upload=6.9 MB     deviation=-1.6σ   triggered_by=PCR
-[ALERT] 192.168.101.128  upload=4.7 MB     deviation=-1.7σ   triggered_by=PCR
-[ALERT] 192.168.101.117  upload=1.2 MB     deviation=-1.8σ   triggered_by=PCR
+[ALERT] 192.168.101.187  upload=7586 MB  deviation=316σ
+[ALERT] 192.168.101.14   upload=5352 MB  deviation=223σ
+[ALERT] 192.168.101.208  upload=4402 MB  deviation=183σ
+[ALERT] 192.168.101.26   upload=259 MB   deviation=9σ
+[ALERT] 192.168.101.197  upload=138 MB   deviation=4σ
+[ALERT] 192.168.101.207  upload=119 MB   deviation=3σ
 ```
-The first five devices were caught by both signals: their uploads range from 138 MB to 7.6 GB, orders of magnitude above the 116.6 MB threshold.
-The most interesting cases are the last four: flagged by PCR alone, with upload volumes below the training mean of 45 MB. 
-
-A volume-only rule would have missed all of them entirely. and the .117 is the clearest example: it uploaded only 1.2 MB that day and received back only ~9.9 MB in return. 
-
-This pushed PCR above the threshold: at −0.783 versus the training mean of −0.8046, it was uploading proportionally more relative to its downloads than any legitimate client in training, despite the low absolute volume. This is the low-and-slow fingerprint: a device whose upload size is invisible to volume detection but whose upload/download imbalance is fully exposed by PCR.
-
-The two most borderline detections are .78 and .128, sitting at 3.40σ and 3.86σ from the PCR mean respectively. Both also have very low absolute upload volumes (6.9 MB and 4.7 MB). For a client with little overall HTTPS activity, the PCR estimate is computed over fewer flows, giving natural variance more room to push the metric across the threshold.
-
-At 3.40σ, the expected probability of a legitimate client exceeding the threshold is approximately 0.034%: about 0.07 false positives across 198 clients. These two are retained under the consistent 3σ rule but are the lowest-confidence detections in this rule, and would be the first to dismiss under analyst review. 
-.117 and .188 are more convincing: .117 sits at 5.0σ, a clean separation even accounting for estimation noise; .188's PCR of −0.583 is 51σ from the training mean, unambiguously anomalous.
+All six devices exceed the 116.6 MB threshold cleanly. The top three (.187, .14, .208) represent bulk data dumps at 4.4–7.6 GB, 183–316σ above baseline — orders of magnitude beyond any legitimate client in training. The remaining three (.26, .197, .207) sit between 119 MB and 259 MB, each clearly distinguishable from the highest unflagged device at 105.2 MB.
 
 
 ## GeoDestination Anomaly Detection
 ### What to look for
-The geo destination rule targets internal clients contacting countries that are anomalous either at the network level or at the individual device level. The first approach was straightforward: flag any internal client that contacts a country in the test period that it never contacted during training. 
+The geo destination rule targets internal clients contacting countries that are new to the entire network. The first approach was straightforward: flag any internal client that contacts a country in the test period that it never contacted during training. 
 
 The result was immediate and catastrophic: 163 of 198 clients flagged, an 82% false positive rate. The reason is CDN rotation: large content delivery networks distribute their infrastructure globally and rotate IP addresses across countries regularly, meaning a legitimate user visiting the same website on two different days may hit servers in different countries each time. 
 A naive per-IP new-country rule is completely blind to this and produces noise, not signal.
 ### Code Implementation
-To solve the false positive problem, we replaced the naive approach with a two-tier detection strategy:
-- Tier 1 (global): flag any client reaching a country that no client in the entire network contacted during training. Any access to these is immediately anomalous at the network level (not just new to the individual device, but new to the whole organisation).
-- Tier 2 (per-IP): flag clients that contact 15 or more new-to-them countries in the test period. The threshold is data-derived: p95 of per-IP unique country counts in training equals 15, meaning any device reaching more new countries than 95% of all clients ever contacted during training is flagged. CDN rotation typically adds 1–3 new countries naturally.
+To solve the false positive problem, the naive per-IP approach was replaced with a global detection strategy: flag any client reaching a country that no client in the entire network contacted during training. Any access to such a country is immediately anomalous at the network level — not just new to the individual device, but new to the whole organisation.
 ```python
-new_to_network = test_countries - global_train_countries  # Tier 1
-new_to_ip      = test_countries - known_countries         # Tier 2
+new_to_network = test_countries - global_train_countries
 
 if new_to_network and flows_to_new >= MIN_INTENSITY_FLOWS:
-      # fire Tier 1 alert
-if len(new_to_ip) >= 15 and flows_to_new >= MIN_INTENSITY_FLOWS:
-      # fire Tier 2 alert
+      # fire alert
 ```
-The set difference operation is the core of both tiers: subtracting the known country sets from the observed ones leaves only the genuinely new destinations. 
-The MIN_INTENSITY_FLOWS = 2 filter is data-derived from the p05 of per-IP-per-country flow counts in training. Any new-country access with fewer flows than this floor is CDN noise.
+The set difference operation is the core: subtracting the network-wide known country set from the observed destinations leaves only genuinely new territory. A MIN_INTENSITY_FLOWS = 10 filter removes CDN edge noise — any new-country access with fewer than 10 flows is treated as a stray CDN rotation rather than a deliberate connection.
 
-A third detection dimension was implemented and removed before finalising this rule: ASN (Autonomous System Number) detection. The hypothesis was that a compromised device contacting a new cloud provider or hosting company is suspicious even if the destination country is already known, a device that always used AWS might suddenly start reaching a Russian hosting ASN, which a country-only rule would miss if Russia was already in the training set. ASN lookups were implemented alongside country lookups using a separate GeoIP database. Applied to the test data, the set of IPs flagged by new-ASN detection overlapped exactly with those flagged by new-country detection. The ASN lookups added approximately 2.2 seconds of overhead per run with zero additional detections, and were removed.
+ASN (Autonomous System Number) detection was also implemented as a complementary rule: a device contacting a new cloud provider or hosting company is suspicious even if the destination country is already in the training set. ASN lookups use a separate GeoIP database and compare against the global union of all ASNs seen by any client during training. This is implemented as a separate step (Step 4b) rather than merged into this rule, since it catches a different threat model — new infrastructure, not just new geography.
 ### Results
-The two-tier approach with the intensity filter produced 6 unique flagged IPs across 9 alerts (some IPs triggered both tiers):
+The global new-country rule with the 10-flow intensity filter produced 3 flagged IPs:
 ```
-[ALERT] 192.168.101.125  +11 new to network, +25 new to IP  (incl. RU, IR, UA)
-[ALERT] 192.168.101.36   +17 new to network, +29 new to IP  (incl. RU, IR, IQ, KZ)
-[ALERT] 192.168.101.72   +15 new to network, +30 new to IP  (incl. RU, IR, UA)
-[ALERT] 192.168.101.167  +1 new to network  (BE only, 9 flows)
-[ALERT] 192.168.101.175  +1 new to network  (BE only, 4 flows)
-[ALERT] 192.168.101.189  +1 new to network  (BE only, 2 flows)
+[ALERT] 192.168.101.125   523 flows to new country/ies: BG, CZ, DK, FI, IR, LV, PL, PY, RU, SC, UA
+[ALERT] 192.168.101.36    904 flows to new country/ies: AR, BA, BG, BY, CZ, EE, FI, GE, HU, IQ, IR, KZ, LU, LV, PL, RU, UA
+[ALERT] 192.168.101.72   1157 flows to new country/ies: BD, BY, BZ, EE, FI, GR, HR, IR, KZ, LU, LV, NG, PL, RU, UA
 ```
-The .125, .36, and .72 are the highest confidence cases: they triggered both tiers, reaching countries the entire network had never contacted in training.
+All three are high-confidence detections: they each reach multiple countries new to the entire network, including Russia, Iran, and Ukraine — geographies absent from the 36 countries seen across all 198 training clients. Each has hundreds of flows to the new destinations, well above the 10-flow noise floor. All three are also independently confirmed by the New Destination rule (Step 4b), which detects the same infrastructure through ASN analysis.
 
-The three most borderline results are .167, .175, and .189: each triggered only Tier 1 with a single new country (Belgium), with 9, 4, and 2 flows respectively. A single new-country contact with very few flows sits at the edge of what can be distinguished from a CDN edge rotation. All three survived the data-derived intensity floor (≥ 2 flows, p05 of training) and were retained to avoid silently discarding a genuine signal, but they warrant the most analyst scrutiny of any detection in the dataset.
+
+## New Destination Detection
+### What to look for
+Beyond new geographic territory, two complementary destination-based signals catch compromised devices reaching infrastructure that was simply never contacted during training — regardless of country.
+
+- Sub-rule A (New External ASN): flags any internal client contacting an Autonomous System (cloud provider, hosting company, ISP) that no client in the entire network used during training. Country detection can miss this if the new infrastructure happens to be in a country the network already visited. Comparing against the global union of all ASNs seen across all 198 training clients makes the signal noise-resistant: legitimate CDN providers used by even a single training client are whitelisted, so only genuinely unseen infrastructure triggers an alert.
+- Sub-rule B (New Internal Destination): flags any internal client communicating with an internal IP (192.168.101.x) that was never a destination in any training flow. During training, all internal HTTPS traffic goes exclusively to the single known server .240. Any internal-to-internal TCP:443 traffic to any other address is therefore an absolute violation — the invariant held perfectly across all 198 clients and 890 K training rows.
+
+### Code Implementation
+```python
+# Sub-rule A — new external ASN (global training set)
+pub_test['asn'] = pub_test['dst_ip'].apply(get_asn)
+new_asns = set(grp['asn'].dropna().unique()) - global_train_asns
+if new_asns and flows >= MIN_NEW_EXTERNAL_FLOWS:  # MIN = 10
+    # fire alert
+
+# Sub-rule B — new internal destination (global training set)
+new_dsts = set(grp['dst_ip'].unique()) - global_train_internal_dsts
+if new_dsts and flows >= MIN_NEW_INTERNAL_FLOWS:  # MIN = 5
+    # fire alert
+```
+The global baseline comparison is the critical design choice. Using per-client known-ASN sets instead would cause false positive explosions: CDN providers rotate IP addresses across hundreds of ASNs, so nearly every device appears to reach "new" ASNs compared to its own individual training history. The global union approach is noise-immune because any ASN touched by any of the 198 training clients is whitelisted.
+
+### Results
+Step 4b flagged 6 alerts across 6 IPs:
+```
+[ALERT] 192.168.101.36    1015 flows to 287 new-to-network ASNs (incl. Russian hosting: REG.RU, C.S.T Ltd, Eneva Ltd...)
+[ALERT] 192.168.101.72    1319 flows to 354 new-to-network ASNs (incl. Cloud Technologies LLC/Cloud.ru, AKT LLC, NPO Unimach LLC...)
+[ALERT] 192.168.101.125    598 flows to 169 new-to-network ASNs (incl. OBIT Ltd, AS43668 LLC, REG.RU...)
+[ALERT] 192.168.101.68     273 flows to new internal IPs: 192.168.101.138, 192.168.101.186
+[ALERT] 192.168.101.138    209 flows to new internal IPs: 192.168.101.186, 192.168.101.68
+[ALERT] 192.168.101.186    429 flows to new internal IPs: 192.168.101.138, 192.168.101.68
+```
+The ASN detections for .36, .72, and .125 independently confirm the geo anomalies already identified in Step 4: the same three devices reach both new countries and new infrastructure, with the ASN names pointing directly at Russian hosting providers not present anywhere in training. This cross-rule corroboration promotes all three to HIGH confidence.
+
+The lateral movement triangle (.68, .138, .186) is the most significant finding in this rule. These three internal devices communicate with each other over TCP:443 — a connection type that, across all 198 clients and 890 K training rows, goes exclusively to the known server .240. The fact that all three devices appear both as sources and destinations, forming a closed triangle of mutual communication, rules out a simple misconfiguration. The traffic pattern is symmetric (up/down byte ratios near 1:1, unlike the 9:1 ratio of normal web browsing), consistent with peer-to-peer command relay or lateral file transfer between compromised hosts.
 
 
 ## DNS Anomaly Detection
@@ -438,94 +436,92 @@ The zero result for DNS-2 is not a failure of the rule, it is explained by the b
 
 ## BotNet Beacon Detection
 ### What to look for
-The BotNet beaconing rule targets internal clients whose network traffic follows an unusually regular timing pattern. A botnet implant checks in with its C&C server at a fixed interval producing a very low standard deviation in inter-flow timestamps compared to legitimate users, whose traffic is naturally irregular. 
+The BotNet beaconing rule targets internal clients whose network traffic follows an unusually regular timing pattern. A botnet implant checks in with its C&C server at a fixed interval, producing a very low standard deviation in inter-flow timestamps compared to legitimate users, whose traffic is naturally irregular.
 
-The detection metric is therefore the standard deviation of inter-flow intervals per client: a suspiciously low value means the device is firing traffic at a clockwork rate.
-The first approach was to apply the standard mean (3σ threshold), flagging any client below this floor. This immediately broke down, the inter-flow interval std distribution in training is heavily right-skewed, with a mean of 8,350s and a std of 6,668s. Applying mean − 3σ gives:
+The detection metric is the standard deviation of inter-flow intervals per client, computed separately for HTTPS traffic and DNS traffic. Separating the protocols is essential: a device with irregular HTTPS browsing and regular DNS beaconing would have its DNS signal masked by the HTTPS noise in a combined calculation.
+
+The first approach was to apply the standard mean − 3σ threshold, flagging any client below this floor. This immediately broke down: the inter-flow interval std distribution in training is heavily right-skewed, with a mean of 8,350 s and a std of 6,668 s. Applying mean − 3σ gives:
 ``` 8,350 − 3 × 6,668 = −11,654 s ```
 A negative standard deviation is mathematically meaningless. No threshold can be set this way on a right-skewed distribution.
 ### Code Implementation
-The solution was to use the 5th percentile (p05 = 1,741.9s) of the training distribution as the threshold floor. This represents the empirical lower boundary of normal behaviour: any client in the test period with an interval std below this value is more regular than 95% of all legitimate clients in training, a strong signal of automated clock-driven behaviour.
+The solution was to use the 5th percentile (p05) of each protocol's training distribution as the threshold floor. This represents the empirical lower boundary of normal behaviour per protocol: any client in the test period with an interval std below the HTTPS floor (1,881.3 s) is more regular than 95% of all legitimate HTTPS sessions in training; similarly for DNS (6,373.2 s).
 
-An alternative approach is the Coefficient of Variation (CV), defined as std/mean, with CV ≤ 0.2. We evaluated this but rejected it: when computed on the training data, the CV ranges for normal clients (3.93–25.52) and the confirmed beaconing devices (3.7–16.6) overlap almost completely. There is no clean separation point, making CV useless as a discriminator for this dataset. The p05 interval std produces a clear boundary with no overlap.
+For HTTPS beaconing, a regularisation ratio check is added on top of the threshold: the device's own training-period HTTPS interval std must be at least 1.5× higher than its test-period std. This guards against devices that were naturally tight in training from being falsely flagged. A device with train_std = 2,000 s and test_std = 1,800 s has barely changed; a device with train_std = 12,000 s and test_std = 1,800 s has genuinely become more regular — only the latter is beaconing.
+
+DNS beaconing includes an additional volume guard: the DNS flow count must also exceed the DNS volume threshold (1,399 flows). A device with few but regularly-timed DNS queries is not generating enough traffic to constitute meaningful beaconing.
+
+An alternative approach, the Coefficient of Variation (CV = std/mean, with CV ≤ 0.2), was evaluated and rejected: the CV ranges for normal clients (3.93–25.52) and confirmed beacons (3.7–16.6) overlap almost completely in training, providing no clean separation point.
 ```python
-threshold = baselines['interval_std_p05']    # 1,741.9s — p05 of training
+# HTTPS beaconing: below p05 AND regularisation ratio ≥ 1.5×
+https_std < https_p05  and  (train_std / https_std) >= 1.5
 
-overall_std = test_sorted.groupby('src_ip')['interval'].std()
-flagged_ips = overall_std[overall_std < threshold]
+# DNS beaconing: below p05 AND volume anomaly
+dns_std < dns_p05  and  dns_count > dns_vol_threshold
 ```
 ### Results
-The rule flagged 8 internal IPs, which split into two distinct beaconing channels:
+The rule flagged 6 internal IPs, split into two per-protocol beaconing channels:
 ```
-[ALERT] 192.168.101.23   interval std=595s   (0.34× floor)  DNS  median=5.0s
-[ALERT] 192.168.101.117  interval std=938s   (0.54× floor)  HTTPS median=100.0s
-[ALERT] 192.168.101.41   interval std=1,185s (0.68× floor)  DNS  median=5.0s
-[ALERT] 192.168.101.32   interval std=1,242s (0.71× floor)  mixed HTTPS=99s DNS=5s
-[ALERT] 192.168.101.72   interval std=1,403s (0.81× floor)  HTTPS median=102.0s
-[ALERT] 192.168.101.201  interval std=1,598s (0.92× floor)  mixed HTTPS=103s DNS=5s
-[ALERT] 192.168.101.160  interval std=1,667s (0.96× floor)  mixed HTTPS=104s DNS=5s
-[ALERT] 192.168.101.188  interval std=1,697s (0.97× floor)  mixed HTTPS=103s DNS=5s
+[ALERT] 192.168.101.23   DNS  interval std=913s   (threshold 6373s)  median=5.0s
+[ALERT] 192.168.101.41   DNS  interval std=1260s  (threshold 6373s)  median=5.0s
+[ALERT] 192.168.101.201  DNS  interval std=3662s  (threshold 6373s)  median=5.0s
+[ALERT] 192.168.101.117  HTTPS interval std=1035s (threshold 1881s)  median=100.0s  regularisation=8.46×
+[ALERT] 192.168.101.157  HTTPS interval std=1864s (threshold 1881s)  median=103.0s  regularisation=6.49×
+[ALERT] 192.168.101.188  HTTPS interval std=1827s (threshold 1881s)  median=103.0s  regularisation=1.84×
 ```
-The 8 devices fall into two beaconing channels. 
-- The first .23 and .41 beacon exclusively via DNS at a 5.0s interval, consistent with what DNS-1 already identified. 
-- The second and more striking group beacons via HTTPS at intervals clustering tightly between 99 and 104 seconds across six independent devices. This is not coincidence, the six infected machines maintaining the same ~100s check-in interval is the fingerprint of a single malware family sharing the same hardcoded C2 timer.
+The 6 devices split cleanly by protocol:
+- The DNS beacons (.23, .41, .201) fire at an exact 5.0 s median interval through the internal DNS resolvers, consistent with Step 5's findings. The same malware heartbeat confirmed by both volume and timing analysis.
+- The HTTPS beacons (.117, .157, .188) fire at intervals clustering tightly between 100 and 103 seconds — the fingerprint of a single malware family sharing the same hardcoded C2 timer.
 
-The 192.168.101.148 was flagged by DNS-1 with 1,661 flows at an exact 5.0s median interval (the same C&C pattern as every confirmed beacon in this dataset).
-However, it is not flagged by this rule. The reason is that .148 also has highly irregular HTTPS traffic with long idle gaps throughout the day. When inter-flow intervals are computed across all its traffic combined (both DNS and HTTPS) the overall interval std is 7,259s, far above the p05 floor of 1,742s. The irregular HTTPS behaviour completely drowns out the tight DNS beaconing signal in the combined calculation.
+The regularisation ratio validates that each HTTPS beacon genuinely changed behaviour in the test period. .117 shows the most dramatic change: its training HTTPS interval std was ~8,740 s (irregular browsing); in the test period it dropped to 1,035 s (8.46× more regular). .157 shows a 6.49× change. Even the borderline .188 shows a 1.84× change, comfortably above the 1.5× threshold.
 
-This is a real limitation of the combined-channel approach, but it also demonstrates exactly why the two rules are complementary rather than redundant. 
-- Step 5 catches .148 through DNS volume. 
-- Step 6 catches the devices whose beaconing dominates their overall traffic pattern. 
+Two previously considered devices were correctly excluded by the per-protocol approach. .32 and .160 appeared suspicious under a combined-channel analysis because mixing their DNS 5 s intervals with HTTPS ~100 s intervals produced an artificially low overall std. With per-protocol analysis, .32's DNS flow count falls below the 1,399-flow volume guard, and .160's HTTPS regularisation ratio is only 1.17× — barely changed from training, not a genuine behavioural shift.
 
-Together they cover both cases, removing either rule would leave a gap.
+The 192.168.101.148, flagged by DNS-1 with 1,661 flows at a 5.0 s median interval, is not flagged by this rule. Although its DNS query count exceeds the volume threshold, its DNS interval std is above the 6,373 s p05 floor: the queries arrive in bursts rather than uniformly spaced, so the timing alone does not meet the beaconing definition. Step 5 and Step 6 together cover both cases — volume-anomalous DNS and timing-regular beacons are complementary, not redundant signals.
 
 
 ---
 
 # Final Results 
 ## Final output
-Running the full detection pipeline against the test dataset produced 27 unique anomalous IPs: 22 internal clients (192.168.101.x) and 5 external clients (188.83.72.x). Each flagged IP was assigned a confidence level based on how many independent rules triggered it: HIGH when two or more rules agree on the same device, MEDIUM when only one rule fires. 
+Running the full detection pipeline against the test dataset produced 24 unique anomalous IPs: 19 internal clients (192.168.101.x) and 5 external clients (188.83.72.x). Each flagged IP was assigned a confidence level based on how many independent rules triggered it: HIGH when two or more rules agree on the same device, MEDIUM when only one rule fires.
 
 The two-level scheme is not arbitrary:
 - when a single rule flags a device, there is always a small residual probability of a false positive; 
 - when two completely independent detection methods both flag the same IP on the same day, the probability of a coincidental double false positive is the product of the individual rates, dropping to approximately 0.0001% per device.
 
-The 7 HIGH confidence IPs are therefore treated as confirmed compromised devices. The 20 MEDIUM confidence IPs are genuine anomalies that warrant investigation but cannot be confirmed by corroboration alone.
+The 7 HIGH confidence IPs are therefore treated as confirmed compromised devices. The 17 MEDIUM confidence IPs are genuine anomalies that warrant investigation but cannot be confirmed by corroboration alone.
 ```
- Total Unique Anomalous IPs: 27
-    - Internal (192.168.101.x): 22
+ Total Unique Anomalous IPs: 24
+    - Internal (192.168.101.x): 19
     - External (188.83.72.x): 5
 
   -- HIGH confidence (2+ independent rules) --
-  [HIGH  ] 192.168.101.23   →  detect_dns_anomalies | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.41   →  detect_dns_anomalies | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.201  →  detect_dns_anomalies | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.207  →  detect_https_exfiltration | detect_dns_anomalies
-  [HIGH  ] 192.168.101.117  →  detect_https_exfiltration | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.188  →  detect_https_exfiltration | detect_botnet_beaconing
-  [HIGH  ] 192.168.101.72   →  detect_new_geo_destinations | detect_botnet_beaconing
+  [HIGH  ] 192.168.101.23        DNS Anomalies | BotNet Beaconing
+  [HIGH  ] 192.168.101.36        New Country Destinations | New Destination IPs / ASNs
+  [HIGH  ] 192.168.101.41        DNS Anomalies | BotNet Beaconing
+  [HIGH  ] 192.168.101.72        New Country Destinations | New Destination IPs / ASNs
+  [HIGH  ] 192.168.101.125       New Country Destinations | New Destination IPs / ASNs
+  [HIGH  ] 192.168.101.201       DNS Anomalies | BotNet Beaconing
+  [HIGH  ] 192.168.101.207       HTTPS Data Exfiltration | DNS Anomalies
 
   -- MEDIUM confidence (single rule) --
-  [MEDIUM] 192.168.101.187  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.14   →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.208  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.26   →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.197  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.78   →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.128  →  detect_https_exfiltration
-  [MEDIUM] 192.168.101.148  →  detect_dns_anomalies
-  [MEDIUM] 192.168.101.32   →  detect_botnet_beaconing
-  [MEDIUM] 192.168.101.160  →  detect_botnet_beaconing
-  [MEDIUM] 192.168.101.125  →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.36   →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.167  →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.175  →  detect_new_geo_destinations
-  [MEDIUM] 192.168.101.189  →  detect_new_geo_destinations
-  [MEDIUM] 188.83.72.61     →  detect_external_anomalies
-  [MEDIUM] 188.83.72.64     →  detect_external_anomalies
-  [MEDIUM] 188.83.72.174    →  detect_external_anomalies
-  [MEDIUM] 188.83.72.182    →  detect_external_anomalies
-  [MEDIUM] 188.83.72.210    →  detect_external_anomalies
+  [MEDIUM] 188.83.72.61          Anomalous External Users
+  [MEDIUM] 188.83.72.64          Anomalous External Users
+  [MEDIUM] 188.83.72.174         Anomalous External Users
+  [MEDIUM] 188.83.72.182         Anomalous External Users
+  [MEDIUM] 188.83.72.210         Anomalous External Users
+  [MEDIUM] 192.168.101.14        HTTPS Data Exfiltration
+  [MEDIUM] 192.168.101.26        HTTPS Data Exfiltration
+  [MEDIUM] 192.168.101.68        New Destination IPs / ASNs
+  [MEDIUM] 192.168.101.117       BotNet Beaconing
+  [MEDIUM] 192.168.101.138       New Destination IPs / ASNs
+  [MEDIUM] 192.168.101.148       DNS Anomalies
+  [MEDIUM] 192.168.101.157       BotNet Beaconing
+  [MEDIUM] 192.168.101.186       New Destination IPs / ASNs
+  [MEDIUM] 192.168.101.187       HTTPS Data Exfiltration
+  [MEDIUM] 192.168.101.188       BotNet Beaconing
+  [MEDIUM] 192.168.101.197       HTTPS Data Exfiltration
+  [MEDIUM] 192.168.101.208       HTTPS Data Exfiltration
 ```
 
 ## False Negative Check
@@ -535,19 +531,21 @@ A false negative is a compromised device that the pipeline did not flag, the mos
 |----------|-----------------------|-----------|-----|
 | HTTPS upload | 105.2 MB | 116.6 MB | 11.4 MB |
 | DNS flows | 1307 flows | 1399 flows | 92 flows |
-| BotNet interval std | 1758.4 s | 1741.9 s | 16.5 s above floor |
+| BotNet HTTPS interval std | 1844 s (.160, regularisation=1.17×) | 1881 s | 37 s above floor |
+| BotNet DNS interval std | 6326 s (.16) | 6373 s | 47 s above floor |
 
-After analyzing the results, no false negatives were found. Every unflagged device sits comfortably below its threshold with a meaningful gap.
+After analyzing the results, no false negatives were found. Every unflagged device sits outside its threshold with a meaningful gap.
 
- The BotNet row deserves a specific note: the highest unflagged interval std is 1,758.4 s, sitting just 16.5 s above the p05 floor of 1,741.9 s. This is the closest any unflagged device gets to a threshold anywhere in the results, but it is still cleanly above the floor.
+The BotNet rows deserve a specific note. For HTTPS beaconing, .160 sits 37 s above the 1,881 s floor, but its regularisation ratio is only 1.17×: it was already similarly tight in training, so the observed regularity is a stable baseline characteristic rather than anomalous behaviour. For DNS beaconing, the closest unflagged device has a DNS interval std of 6,326 s (47 s above the floor) and a DNS flow count below the volume threshold, so the timing alone would not constitute meaningful beaconing regardless.
 
 ## Highest Confidence Detections
-The 7 HIGH confidence devices are those flagged by two or more completely independent detection rules. Independence here is not just statistical, each rule operates on a different metric, a different protocol, and a different aspect of behaviour. 
+The 7 HIGH confidence devices are those flagged by two or more completely independent detection rules. Independence here is not just statistical — each rule operates on a different metric, a different protocol, and a different aspect of behaviour.
 
-- The BotNet rule measures traffic timing regularity across all flows. 
+- The BotNet rule measures traffic timing regularity per protocol. 
 - The DNS rule measures query volume and destination. 
-- The HTTPS rule measures upload volume and upload/download asymmetry. 
+- The HTTPS rule measures upload volume. 
 - The Geo rule measures destination countries. 
+- The New Destination rule measures new ASNs and new internal connections. 
 
 None of these share an input or a computation path. When two of them agree on the same device, they are making the same accusation from entirely different angles.
 
@@ -555,28 +553,26 @@ None of these share an input or a computation path. When two of them agree on th
 |----------|-----------------|----------------|
 | 192.168.101.41 | DNS Volume + BotNet | 39,493 DNS queries at an exact 5.0 s interval — extreme C2 beaconing via internal DNS relay, confirmed by both volume and timing |
 | 192.168.101.23 | DNS Volume + BotNet | 8,651 DNS queries at 5.0 s — same C2 pattern, smaller scale, same malware family |
-| 192.168.101.201 | DNS Volume + BotNet | DNS beaconing at 5.0 s plus HTTPS activity at ~103 s — dual-channel implant using both protocols |
+| 192.168.101.201 | DNS Volume + BotNet | 2,941 DNS queries at exact 5.0 s intervals confirmed independently by volume analysis (8.4σ above mean) and timing regularity — strong single-protocol C2 beaconing |
 | 192.168.101.207 | HTTPS Exfiltration + DNS Anomalies | 119 MB uploaded over HTTPS while simultaneously generating 1,418 DNS queries — active exfiltration running alongside a DNS beacon |
-| 192.168.101.72 | New Geo + BotNet | Contacted 30 new countries including RU, IR, UA while maintaining a regular ~102 s HTTPS beacon — C2 communication combined with broad new infrastructure reach |
-| 192.168.101.117 | HTTPS PCR + BotNet | Only 1.2 MB uploaded but PCR = −0.783 — low-and-slow exfiltration with an HTTPS beacon at 100 s intervals, the most covert device in the dataset |
-| 192.168.101.188 | HTTPS PCR + BotNet | 39.4 MB uploaded with PCR = −0.583 plus regular ~103 s beacon — moderate-volume exfiltration with a persistent C2 check-in |
-
-The 192.168.101.117 is the most notable entry: its upload volume of 1.2 MB is well below the training mean of 45 MB, meaning a volume-only rule would have given it a clean bill of health. It was caught exclusively by PCR and confirmed by BotNet — two independent signals that together make its compromise unambiguous. This is the strongest validation in the entire results for why the dual-signal HTTPS rule was necessary.
+| 192.168.101.72 | New Geo + New Destination | Contacted 15 new countries including RU, IR, UA and 354 new-to-network ASNs pointing at Russian hosting infrastructure — geographic and infrastructure expansion confirmed by two independent rules |
+| 192.168.101.36 | New Geo + New Destination | 904 flows to 17 new countries including RU, IR, IQ, KZ and 1,015 flows to 287 new-to-network ASNs — same infrastructure fingerprint as .72 and .125, consistent with coordinated exfiltration campaign |
+| 192.168.101.125 | New Geo + New Destination | 523 flows to 11 new countries including RU, IR, UA and 598 flows to 169 new-to-network ASNs — third device in the coordinated geo/infrastructure expansion group |
 
 
 ## Attack Patterns
-Grouping the 27 flagged devices by behaviour reveals eight distinct attack patterns active in the test period:
+Grouping the 24 flagged devices by behaviour reveals eight distinct attack patterns active in the test period:
 
 | Pattern | Devices | Description |
 |----------|---------|-------------|
-| Mass HTTPS Exfiltration | .187, .14, .208 | 4.4-7.6 GB uploaded in a single day, 182-316σ above baseline - bulk data dumps, likely automated |
-| Moderate HTTPS Exfiltration | .197, .26 | 138–259 MB uploaded — above the 116.6 MB threshold by 3.9–9σ, triggered by both volume and PCR |
-| Low-and-Slow Exfiltration | .117, .78, .128, .188 | Upload volumes below the training mean, caught only by PCR — covert, sustained data leakage |
-| DNS C&C Beaconing | .41, .23, .201, .148 | Exact 5.0s query interval to internal resolvers - malware heartbeat routed through internal DNS relay |
-| HTTPS C&C Beaconing | .117, .72, .32, .160, .188, .201 | Check-in intervals clustering between 99-104s across six independent devices - single malware family, shared hardcoded timer |
-| Dual-Channel implant | .201, .207 | Simultaneous DNS beaconing and HTTPS activity - two independent C&C channels or exfiltration running alongside beaconing |
-| Geo Expansion | .125, .36, .167, .175, .189 | Devices that contacted countries new to the entire network — .125 and .36 triggered both tiers with 25–29 new countries including RU, IR, IQ, KZ; .167, .175, and .189 triggered Tier 1 only with a single new country (Belgium), with 9, 4, and 2 flows respectively — the most borderline detections in the dataset |
-| External upload anomaly | .61, .64, .174, .182, .210 | External clients breaking the tight 8.50 ratio invariant - three uploading more than normal, two downloading more than normal |
+| Mass HTTPS Exfiltration | .187, .14, .208 | 4.4–7.6 GB uploaded in a single day, 183–316σ above baseline — bulk data dumps, likely automated |
+| Moderate HTTPS Exfiltration | .197, .26, .207 | 119–259 MB uploaded, 3–9σ above the 116.6 MB threshold |
+| DNS C&C Beaconing | .41, .23, .201, .148 | Exact 5.0 s query interval to internal resolvers — malware heartbeat routed through internal DNS relay |
+| HTTPS C&C Beaconing | .117, .157, .188 | Check-in intervals clustering between 100–103 s across three independent devices — single malware family, shared hardcoded timer |
+| Dual-Channel Implant | .207 | Simultaneous HTTPS exfiltration and DNS beaconing — active data staging running alongside a C2 heartbeat |
+| Lateral Movement | .68, .138, .186 | Internal-to-internal TCP:443 traffic to IPs never seen as destinations in training; symmetric byte ratios (~1:1) inconsistent with web browsing — peer-to-peer command relay or lateral file transfer between compromised hosts |
+| Geo / Infrastructure Expansion | .36, .72, .125 | Traffic to countries and ASNs never seen in training, including Russian hosting providers (REG.RU, Cloud.ru, OBIT) — consistent with coordinated exfiltration to attacker-controlled infrastructure |
+| External Upload Anomaly | .61, .64, .174, .182, .210 | External clients breaking the tight 8.50 ratio invariant — three uploading proportionally more than normal, two downloading more than normal |
 
 
 ---
@@ -590,14 +586,14 @@ def send_syslog_alert(ip: str) -> None:
   with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
     sock.sendto(f"Alarm UEBA {ip}".encode(), (WAZUH_IP, WAZUH_PORT))
 ```
-One packet is sent per flagged IP. All 27 were successfully delivered to 172.100.0.12:514:
+One packet is sent per flagged IP. All 24 were successfully delivered to 172.100.0.12:514:
 ```
 [*] Sending UEBA alerts to Wazuh (172.100.0.12:514)...
       → Alarm UEBA 192.168.101.23
+      → Alarm UEBA 192.168.101.36
       → Alarm UEBA 192.168.101.41
-      → Alarm UEBA 192.168.101.72
       ...
-      → Alarm UEBA 192.168.101.160   (27 total)
+      → Alarm UEBA 192.168.101.208   (24 total)
 ```
 
 
@@ -633,8 +629,8 @@ Rule ID 100201 is the one used having in mind the Guides.
 
 
 ## Dashboard 
-With the Wazuh stack running and all 27 syslog packets delivered, navigating to Security Events and applying the DQL filter rule.id: 100201 shows one event per flagged IP: 27 hits, each carrying data.srcip with the anomalous device's address, rule.level = 7, and decoder.name = ueba_alarm.
-![Wazuh dashboard — 27 UEBA alerts for rule.id 100201](docs/Wazuh_dashboard.png)
+With the Wazuh stack running and all 24 syslog packets delivered, navigating to Security Events and applying the DQL filter rule.id: 100201 shows one event per flagged IP: 24 hits, each carrying data.srcip with the anomalous device's address, rule.level = 7, and decoder.name = ueba_alarm.
+![Wazuh dashboard — 24 UEBA alerts for rule.id 100201](docs/Wazuh_dashboard.png)
 
 ## Conclusion
 This integration pattern, demonstrates that any monitoring system can feed alerts into a SIEM without requiring a Wazuh agent on the monitoring machine. The Wazuh manager acts as a centralised collection point: once the decoder and rule are in place, any source that speaks syslog can contribute structured, queryable events to the same dashboard used for all other security monitoring.

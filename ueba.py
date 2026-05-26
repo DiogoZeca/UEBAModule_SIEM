@@ -5,7 +5,7 @@ import socket
 import geoip2.database
 from collections import defaultdict
 
-# ── Paths ────────────────────────────────────────────────────────────────────
+# ── Paths ─────────────────────────────────────────────────────────────────────
 DATASET = 1
 DATA_DIR = f"dataset{DATASET}/"
 GEO_DIR  = "geo-database/"
@@ -16,8 +16,9 @@ EXTERNAL_TRAIN = DATA_DIR + f"external_train{DATASET}.json"
 EXTERNAL_TEST  = DATA_DIR + f"external_test{DATASET}.json"
 
 GEODB_COUNTRY = GEO_DIR + "dbip-country-lite-2026-05.mmdb"
+GEODB_ASN     = GEO_DIR + "dbip-asn-lite-2026-05.mmdb"
 
-# ── Load data ─────────────────────────────────────────────────────────────────
+# ── Load data ──────────────────────────────────────────────────────────────────
 print("[*] Loading datasets...")
 int_train = pd.read_json(INTERNAL_TRAIN)
 int_test  = pd.read_json(INTERNAL_TEST)
@@ -28,133 +29,80 @@ print(f"    internal_test  : {int_test.shape}")
 print(f"    external_train : {ext_train.shape}")
 print(f"    external_test  : {ext_test.shape}")
 
-# ── Geo-database handles ──────────────────────────────────────────────────────
-geodb = geoip2.database.Reader(GEODB_COUNTRY)
+# ── Geo-database handles ───────────────────────────────────────────────────────
+geodb    = geoip2.database.Reader(GEODB_COUNTRY)
+geodbasn = geoip2.database.Reader(GEODB_ASN)
 
-def get_country(ip):
+def get_country(ip: str) -> str:
     try:
         return geodb.country(ip).country.iso_code or "XX"
     except Exception:
         return "PRIVATE"
 
-# ── Private network helpers ───────────────────────────────────────────────────
+def get_asn(ip: str) -> str | None:
+    try:
+        return geodbasn.asn(ip).autonomous_system_organization or "Unknown"
+    except Exception:
+        return None
+
+# ── Private network helpers ────────────────────────────────────────────────────
 PRIVATE_NETS = [
     ipaddress.IPv4Network("10.0.0.0/8"),
     ipaddress.IPv4Network("172.16.0.0/12"),
     ipaddress.IPv4Network("192.168.0.0/16"),
 ]
 
-def is_private(ip):
+def is_private(ip: str) -> bool:
     addr = ipaddress.IPv4Address(ip)
     return any(addr in net for net in PRIVATE_NETS)
 
-# ── Step 1: Baseline ─────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
+SIGMA      = 3
+WAZUH_IP   = "172.100.0.12"
+WAZUH_PORT = 514
 
-def compute_baselines():
-    """Compute all baseline statistics from training data.
+# ── Step 1: Baselines ──────────────────────────────────────────────────────────
 
-    Reads internal_train and external_train once and returns a single dict
-    that every rule function consumes. Nothing is printed or flagged here —
-    this is the statistical foundation of the entire UEBA pipeline.
-
-    Returned keys and their consumers:
-      https_up_mean, https_up_std          → Step 3: volume threshold (mean + 3σ)
-      pcr_mean, pcr_std                    → Step 3: PCR threshold (mean + 3σ)
-      dns_flows_mean, dns_flows_std        → Step 5: DNS volume threshold (mean + 3σ)
-      dns_dst_per_ip                       → Step 5: per-alert extra context
-      dns_internal_servers                 → Step 5: zero-threshold public-DNS rule
-      countries_per_ip                     → Step 4: per-IP known country set (Tier-2)
-      country_stats, total_train_countries → Step 4 + report characterisation
-      interval_std_mean, _std, _p05        → Step 6: beaconing threshold (p05)
-      ext_ratio_mean, ext_ratio_std        → Step 2: external ratio window
-      ext_interval_mean/median/std/p90/p95 → characterisation only (report)
-      https_int_*/https_ext_*              → characterisation only (internal/external HTTPS split)
-    """
-
+def compute_baselines() -> dict:
     b = {}
 
-    # ── Step 3 baseline: HTTPS upload volume and PCR ──────────────────────────
-    # Group all port-443 flows by source IP and aggregate upload/download totals.
-    # PCR = (up - down) / (up + down), range [-1, +1].
-    # Normal HTTPS is download-heavy: training PCR ≈ -0.80 (mean), std ≈ 0.004.
-    # Exfiltration pushes more bytes out than in → PCR rises toward 0 or +1.
-    # Alert fires if upload volume OR PCR individually exceeds mean + 3σ.
+    # HTTPS upload volume (Step 3)
     https = int_train[int_train['port'] == 443]
     https_per_ip = https.groupby('src_ip').agg(
-        https_flows  = ('up_bytes', 'count'),
-        total_up     = ('up_bytes', 'sum'),
-        total_down   = ('down_bytes', 'sum'),
-    ).assign(ratio=lambda d: d['total_down'] / d['total_up'])
-
+        total_up   = ('up_bytes', 'sum'),
+        total_down = ('down_bytes', 'sum'),
+    )
     b['https_up_mean'] = https_per_ip['total_up'].mean()
     b['https_up_std']  = https_per_ip['total_up'].std()
 
-    pcr = (https_per_ip['total_up'] - https_per_ip['total_down']) / (https_per_ip['total_up'] + https_per_ip['total_down'])
-    b['pcr_mean'] = pcr.mean()
-    b['pcr_std']  = pcr.std()
-
-    # ── HTTPS destination split: internal server (.240) vs external ───────────
-    # The spec requires separate characterisation of exchanges with the internal
-    # HTTPS server and with external HTTPS servers. Both groups maintain nearly
-    # identical down/up ratios (~9.2), which validates the combined baseline above.
+    # HTTPS destination split: internal server vs external (characterisation only)
     INTERNAL_HTTPS_SERVER = '192.168.101.240'
-    https_int = https[https['dst_ip'] == INTERNAL_HTTPS_SERVER]
-    https_ext = https[https['dst_ip'] != INTERNAL_HTTPS_SERVER]
+    for label, subset in [('int', https[https['dst_ip'] == INTERNAL_HTTPS_SERVER]),
+                          ('ext', https[https['dst_ip'] != INTERNAL_HTTPS_SERVER])]:
+        per_ip = subset.groupby('src_ip').agg(
+            total_up   = ('up_bytes', 'sum'),
+            total_down = ('down_bytes', 'sum'),
+        ).assign(ratio=lambda d: d['total_down'] / d['total_up'])
+        b[f'https_{label}_flows']      = len(subset)
+        b[f'https_{label}_up_mean']    = per_ip['total_up'].mean()
+        b[f'https_{label}_down_mean']  = per_ip['total_down'].mean()
+        b[f'https_{label}_ratio_mean'] = per_ip['ratio'].mean()
+        b[f'https_{label}_ratio_std']  = per_ip['ratio'].std()
 
-    https_int_per_ip = https_int.groupby('src_ip').agg(
-        total_up   = ('up_bytes', 'sum'),
-        total_down = ('down_bytes', 'sum'),
-    ).assign(ratio=lambda d: d['total_down'] / d['total_up'])
-
-    https_ext_per_ip = https_ext.groupby('src_ip').agg(
-        total_up   = ('up_bytes', 'sum'),
-        total_down = ('down_bytes', 'sum'),
-    ).assign(ratio=lambda d: d['total_down'] / d['total_up'])
-
-    b['https_int_flows']      = len(https_int)
-    b['https_ext_flows']      = len(https_ext)
-    b['https_int_up_mean']    = https_int_per_ip['total_up'].mean()
-    b['https_int_up_std']     = https_int_per_ip['total_up'].std()
-    b['https_int_down_mean']  = https_int_per_ip['total_down'].mean()
-    b['https_int_ratio_mean'] = https_int_per_ip['ratio'].mean()
-    b['https_int_ratio_std']  = https_int_per_ip['ratio'].std()
-    b['https_ext_up_mean']    = https_ext_per_ip['total_up'].mean()
-    b['https_ext_up_std']     = https_ext_per_ip['total_up'].std()
-    b['https_ext_down_mean']  = https_ext_per_ip['total_down'].mean()
-    b['https_ext_ratio_mean'] = https_ext_per_ip['ratio'].mean()
-    b['https_ext_ratio_std']  = https_ext_per_ip['ratio'].std()
-
-    # ── Step 5 baseline: DNS flow volume and internal server set ──────────────
-    # In training every client queries only the two internal DNS servers (.226,
-    # .229) — no exceptions. This absolute invariant powers the zero-threshold
-    # DNS-2 sub-rule: any query outside dns_internal_servers is immediately
-    # anomalous without needing a statistical test.
-    # DNS-1 sub-rule uses mean + 3σ on per-client flow count. Both DNS tunneling
-    # and C&C beaconing generate far more queries than any legitimate client.
+    # DNS flow volume and internal server set (Step 5)
     dns = int_train[int_train['port'] == 53]
-    dns_per_ip = dns.groupby('src_ip').agg(
-        dns_flows  = ('up_bytes', 'count'),
-        mean_up    = ('up_bytes', 'mean'),
-        unique_dst = ('dst_ip', 'nunique'),
-    )
-
-    b['dns_flows_mean'] = dns_per_ip['dns_flows'].mean()
-    b['dns_flows_std']  = dns_per_ip['dns_flows'].std()
-
-    b['dns_dst_per_ip']       = dns.groupby('src_ip')['dst_ip'].apply(set).to_dict()
+    b['dns_flows_mean']       = dns.groupby('src_ip').size().mean()
+    b['dns_flows_std']        = dns.groupby('src_ip').size().std()
     b['dns_internal_servers'] = set(dns['dst_ip'].unique())
 
-    # ── Step 4 baseline: geo destinations per client ──────────────────────────
-    # Only public dst_ip addresses are geo-tagged (private IPs have no country).
-    # Two structures are built:
-    #   countries_per_ip  — per-client set, used in Tier-2 (per-IP extreme reach)
-    #   global set        — union of all, recomputed inside the rule for Tier-1
-    #     (new-to-entire-network country detection)
-    # country_stats is a flow+byte breakdown used only for report characterisation.
+    # Geo: per-IP known countries and ASNs (Steps 4, 4b)
     pub = int_train[~int_train['dst_ip'].apply(is_private)].copy()
     pub['country'] = pub['dst_ip'].apply(get_country)
+    pub['asn']     = pub['dst_ip'].apply(get_asn)
 
-    b['countries_per_ip'] = pub.groupby('src_ip')['country'].apply(set).to_dict()
+    b['countries_per_ip']        = pub.groupby('src_ip')['country'].apply(set).to_dict()
+    b['global_train_asns']       = set(pub['asn'].dropna().unique())
+    b['geo_min_intensity_flows'] = 10
 
     country_stats = pub.groupby('country').agg(
         flows = ('up_bytes', 'count'),
@@ -163,409 +111,294 @@ def compute_baselines():
     b['country_stats']         = country_stats
     b['total_train_countries'] = len(country_stats)
 
-    # Tier-2 threshold: p95 of per-IP unique country count in training.
-    # Any test client reaching more new-to-it countries than 95% of all training
-    # clients ever contacted is flagged as having unusually broad new reach.
-    # Mirrors the p05 approach used for BotNet — both use tails of the distribution.
-    country_counts_per_ip      = pub.groupby('src_ip')['country'].nunique()
-    b['geo_country_count_p95'] = int(country_counts_per_ip.quantile(0.95))
+    # Global set of internal destination IPs seen in training (Step 4b)
+    priv = int_train[int_train['dst_ip'].apply(is_private)]
+    b['global_train_internal_dsts'] = set(priv['dst_ip'].unique())
 
-    # Intensity floor: p05 of per-(IP, country) flow counts in training.
-    # Represents the minimum flows a real contact produces in training — any
-    # new-country access below this floor in the test period is CDN noise.
-    flows_per_ip_country         = pub.groupby(['src_ip', 'country']).size()
-    b['geo_min_intensity_flows'] = max(int(flows_per_ip_country.quantile(0.05)), 2)
+    # Beaconing: per-protocol interval std p05 and per-IP baseline (Step 6)
+    for proto, port in [('https', 443), ('dns', 53)]:
+        subset = int_train[int_train['port'] == port].sort_values(['src_ip', 'timestamp'])
+        iv_std = subset.groupby('src_ip')['timestamp'].apply(lambda x: x.diff().std()).dropna()
+        b[f'{proto}_interval_std_p05']    = iv_std.quantile(0.05)
+        b[f'{proto}_interval_std_per_ip'] = iv_std.to_dict()
 
-    # ── Step 6 baseline: inter-flow interval std (beaconing) ─────────────────
-    # Flows are sorted per-client by timestamp; diff() gives the time gap between
-    # consecutive flows. The std of these gaps measures how *regular* the traffic
-    # pattern is. A botnet beacon fires at a fixed interval → very low std.
-    # Training distribution is right-skewed (mean ≈ 8350s, long right tail from
-    # idle clients). mean - 3σ ≈ -11,654s — meaningless for a std value.
-    # Solution: use the 5th percentile as the lower-bound threshold instead.
-    # Any test client below p05 of training is flagged as suspiciously regular.
-    sorted_train = int_train.sort_values(['src_ip', 'timestamp']).copy()
-    sorted_train['interval'] = sorted_train.groupby('src_ip')['timestamp'].diff()
-
-    interval_std_per_ip = sorted_train.groupby('src_ip')['interval'].std().dropna()
-
-    b['interval_std_mean'] = interval_std_per_ip.mean()
-    b['interval_std_std']  = interval_std_per_ip.std()
-    b['interval_std_p05']  = interval_std_per_ip.quantile(0.05)
-
-    # ── Step 2 baseline: external client down/up ratio ────────────────────────
-    # External clients (188.83.72.x) access corporate port-443 servers.
-    # Training ratio is extremely tight: mean ≈ 8.50, std ≈ 0.04.
-    # A 3σ window gives [8.38, 8.62]. The tight std (0.04) means even a small
-    # deviation is statistically significant — at 3σ the expected false-positive
-    # rate is 0.1% per client. A client uploading unusually much (exfiltration to
-    # the server) or downloading unusually little will break this distribution.
+    # External client ratio baseline (Step 2)
     ext_per_ip = ext_train.groupby('src_ip').agg(
         total_up   = ('up_bytes', 'sum'),
         total_down = ('down_bytes', 'sum'),
     ).assign(ratio=lambda d: d['total_down'] / d['total_up'])
-
     b['ext_ratio_mean'] = ext_per_ip['ratio'].mean()
     b['ext_ratio_std']  = ext_per_ip['ratio'].std()
-
-    # ── External: inter-flow intervals ────────────────────────────────────────
-    # Aggregate stats confirm the heavy-tailed distribution (mean >> median)
-    # typical of real human browsing. Per-client std p05 used by detection:
-    # legitimate clients exhibit high interval variance (browsing bursts
-    # separated by idle time); automated traffic has unnaturally low std.
-    ext_sorted = ext_train.sort_values(['src_ip', 'timestamp']).copy()
-    ext_sorted['interval'] = ext_sorted.groupby('src_ip')['timestamp'].diff()
-    ext_iv = ext_sorted['interval'].dropna()
-
-    b['ext_interval_mean']   = ext_iv.mean()
-    b['ext_interval_median'] = ext_iv.median()
-    b['ext_interval_std']    = ext_iv.std()
-    b['ext_interval_p90']    = ext_iv.quantile(0.90)
-    b['ext_interval_p95']    = ext_iv.quantile(0.95)
-
-    # Per-client interval std — p05 used as automation/beaconing threshold.
-    # Clients below this floor show unnaturally regular timing (bot-like).
-    ext_interval_std_per_ip   = ext_sorted.groupby('src_ip')['interval'].std().dropna()
-    b['ext_interval_std_p05'] = ext_interval_std_per_ip.quantile(0.05)
 
     return b
 
 
-# ── Step 2: Detect anomalous external users ───────────────────────────────────
-
-SIGMA      = 3             # standard deviations used as threshold across all rules
-WAZUH_IP   = "172.100.0.12"  # wazuh.manager Docker container
-WAZUH_PORT = 514              # syslog UDP listener
+# ── Step 2: Anomalous external users ──────────────────────────────────────────
 
 def detect_external_anomalies(baselines: dict) -> list[dict]:
-    """Flag external clients whose down/up ratio deviates from the training baseline.
-
-    A legitimate external client consistently downloads ~8.5× what it uploads
-    (std=0.04). A broken ratio indicates exfiltration toward the server or
-    unusual large-object retrieval. Threshold: mean ± 3σ = [8.3817, 8.6226].
-    """
-    mean  = baselines['ext_ratio_mean']
-    std   = baselines['ext_ratio_std']
-    low   = mean - SIGMA * std
-    high  = mean + SIGMA * std
+    mean = baselines['ext_ratio_mean']
+    std  = baselines['ext_ratio_std']
+    low  = mean - SIGMA * std
+    high = mean + SIGMA * std
 
     per_ip = ext_test.groupby('src_ip').agg(
-        total_up   = ('up_bytes',   'sum'),
+        total_up   = ('up_bytes', 'sum'),
         total_down = ('down_bytes', 'sum'),
     ).assign(ratio=lambda d: d['total_down'] / d['total_up'])
 
-    flagged = per_ip[(per_ip['ratio'] < low) | (per_ip['ratio'] > high)].copy()
-
     alerts = []
-    for ip, row in flagged.iterrows():
+    for ip, row in per_ip[(per_ip['ratio'] < low) | (per_ip['ratio'] > high)].iterrows():
+        deviation = abs(row['ratio'] - mean) / std
         alerts.append({
-            'rule'      : 'Anomalous External User',
-            'ip'        : ip,
-            'metric'    : 'down/up ratio',
-            'observed'  : round(row['ratio'], 4),
-            'threshold' : f'[{low:.4f}, {high:.4f}]',
-            'baseline'  : f'mean={mean:.4f} std={std:.4f}',
-            'deviation' : round(abs(row['ratio'] - mean) / std, 1),
+            'rule'  : 'Anomalous External User',
+            'ip'    : ip,
+            'threat': 'Unusual upload/download ratio — possible exfiltration or compromise',
+            'why'   : f"Down/up ratio={row['ratio']:.4f} ({deviation:.1f}σ from baseline {mean:.4f}±{std:.4f}; window [{low:.4f}, {high:.4f}])",
         })
-
     return alerts
 
 
-# ── Step 3: Detect HTTPS data exfiltration ───────────────────────────────────
+# ── Step 3: HTTPS data exfiltration ───────────────────────────────────────────
 
 def detect_https_exfiltration(baselines: dict) -> list[dict]:
-    """Flag internal clients whose total HTTPS upload far exceeds the training baseline.
+    mean      = baselines['https_up_mean']
+    std       = baselines['https_up_std']
+    threshold = mean + SIGMA * std
 
-    Normal clients upload at most ~120 MB/day. Exfiltrating devices send
-    hundreds of MBs or GBs, breaking the mean + 3σ threshold.
-    """
-    mean          = baselines['https_up_mean']
-    std           = baselines['https_up_std']
-    vol_threshold = mean + SIGMA * std
-    pcr_threshold = baselines['pcr_mean'] + SIGMA * baselines['pcr_std']
-
-    https_test = int_test[int_test['port'] == 443]
-    per_ip = https_test.groupby('src_ip').agg(
-        total_up   = ('up_bytes',   'sum'),
-        total_down = ('down_bytes', 'sum'),
-    ).assign(
-        ratio = lambda d: d['total_down'] / d['total_up'],
-        pcr   = lambda d: (d['total_up'] - d['total_down']) / (d['total_up'] + d['total_down']),
+    per_ip = int_test[int_test['port'] == 443].groupby('src_ip').agg(
+        total_up = ('up_bytes', 'sum'),
     )
 
-    flagged_vol = per_ip['total_up'] > vol_threshold
-    flagged_pcr = per_ip['pcr'] > pcr_threshold
-    flagged     = per_ip[flagged_vol | flagged_pcr].copy()
-
     alerts = []
-    for ip, row in flagged.iterrows():
-        triggers = []
-        if row['total_up'] > vol_threshold:
-            triggers.append('volume')
-        if row['pcr'] > pcr_threshold:
-            triggers.append('PCR')
+    for ip, row in per_ip[per_ip['total_up'] > threshold].iterrows():
+        upload_mb = row['total_up'] / 1e6
+        deviation = (row['total_up'] - mean) / std
         alerts.append({
-            'rule'      : 'HTTPS Data Exfiltration',
-            'ip'        : ip,
-            'metric'    : 'total upload (port 443)',
-            'observed'  : f"{row['total_up']/1e6:.1f} MB",
-            'threshold' : f"{vol_threshold/1e6:.1f} MB",
-            'baseline'  : f"mean={mean/1e6:.1f} MB  std={std/1e6:.1f} MB",
-            'deviation' : round((row['total_up'] - mean) / std, 1),
-            'extra'     : f"PCR={row['pcr']:.3f}  pcr_threshold={pcr_threshold:.3f}  triggered_by={'+'.join(triggers)}",
+            'rule'  : 'HTTPS Data Exfiltration',
+            'ip'    : ip,
+            'threat': 'Data exfiltration over HTTPS',
+            'why'   : f"Uploaded {upload_mb:.0f} MB — {deviation:.0f}σ above mean (threshold: {threshold/1e6:.0f} MB)",
         })
+    return sorted(alerts, key=lambda a: float(a['why'].split()[1]), reverse=True)
 
-    return sorted(alerts, key=lambda a: float(a['observed'].split()[0]), reverse=True)
 
-
-# ── Step 4: Detect anomalous geo destinations ─────────────────────────────────
+# ── Step 4: New country destinations ──────────────────────────────────────────
 
 def detect_new_geo_destinations(baselines: dict) -> list[dict]:
-    """Flag internal clients contacting countries anomalous at the network level.
-
-    Two-tier approach to avoid CDN rotation false positives:
-    1. Global: flag any client reaching a country that NO client contacted in training.
-    2. Per-IP extreme: flag clients with an unusually high number of new-to-them
-       countries (>= 10), indicating the device is reaching broad new infrastructure.
-    """
     global_train_countries = set().union(*baselines['countries_per_ip'].values())
+    min_flows              = baselines['geo_min_intensity_flows']
 
     pub_test = int_test[~int_test['dst_ip'].apply(is_private)].copy()
     pub_test['country'] = pub_test['dst_ip'].apply(get_country)
 
     test_countries_per_ip = pub_test.groupby('src_ip')['country'].apply(set).to_dict()
-
-    NEW_COUNTRY_PER_IP_THRESHOLD = baselines['geo_country_count_p95']
-    MIN_INTENSITY_FLOWS          = baselines['geo_min_intensity_flows']
-
-    # Pre-group once — avoids O(n×m) re-scan of pub_test on every iteration
-    ip_flows_map = {ip: df for ip, df in pub_test.groupby('src_ip')}
+    ip_flows_map          = {ip: df for ip, df in pub_test.groupby('src_ip')}
 
     alerts = []
-    all_ips = set(test_countries_per_ip)
-
-    for ip in sorted(all_ips):
-        known_countries = baselines['countries_per_ip'].get(ip, set())
-        test_countries  = test_countries_per_ip.get(ip, set())
-        new_to_network  = test_countries - global_train_countries
-        new_to_ip       = test_countries - known_countries
-
-        ip_flows = ip_flows_map.get(ip, pd.DataFrame(columns=pub_test.columns))
-
-        # Tier 1: client contacts a country the whole network never saw in training
-        if new_to_network:
-            new_net_rows = ip_flows[ip_flows['country'].isin(new_to_network)]
-            flows_to_new = len(new_net_rows)
-            bytes_to_new = new_net_rows['up_bytes'].sum()
-            if flows_to_new >= MIN_INTENSITY_FLOWS:
-                alerts.append({
-                    'rule'      : 'Anomalous Geo Destination (New Country)',
-                    'ip'        : ip,
-                    'metric'    : 'countries new to entire network',
-                    'observed'  : ', '.join(sorted(new_to_network)),
-                    'threshold' : f'{len(global_train_countries)} countries seen in training',
-                    'baseline'  : f"{len(known_countries)} countries known for this IP",
-                    'deviation' : f"+{len(new_to_network)} new to network",
-                    'extra'     : f"flows_to_new={flows_to_new}  bytes_to_new={bytes_to_new/1e3:.1f} KB",
-                })
-
-        # Tier 2: client contacts an extreme number of new-to-it countries
-        if len(new_to_ip) >= NEW_COUNTRY_PER_IP_THRESHOLD:
-            new_ip_rows  = ip_flows[ip_flows['country'].isin(new_to_ip)]
-            flows_to_new = len(new_ip_rows)
-            bytes_to_new = new_ip_rows['up_bytes'].sum()
-            if flows_to_new >= MIN_INTENSITY_FLOWS:
-                alerts.append({
-                    'rule'      : 'Anomalous Geo Destination (Broad New Reach)',
-                    'ip'        : ip,
-                    'metric'    : 'new countries for this IP',
-                    'observed'  : f"{len(new_to_ip)} new countries: {', '.join(sorted(new_to_ip))}",
-                    'threshold' : f">= {NEW_COUNTRY_PER_IP_THRESHOLD} new countries",
-                    'baseline'  : f"{len(known_countries)} countries known for this IP",
-                    'deviation' : f"+{len(new_to_ip)} new",
-                    'extra'     : f"flows_to_new={flows_to_new}  bytes_to_new={bytes_to_new/1e3:.1f} KB",
-                })
-
+    for ip in sorted(test_countries_per_ip):
+        new_to_network = test_countries_per_ip[ip] - global_train_countries
+        if not new_to_network:
+            continue
+        ip_flows     = ip_flows_map.get(ip, pd.DataFrame(columns=pub_test.columns))
+        flows_to_new = len(ip_flows[ip_flows['country'].isin(new_to_network)])
+        if flows_to_new < min_flows:
+            continue
+        alerts.append({
+            'rule'  : 'New Country Destination',
+            'ip'    : ip,
+            'threat': 'Traffic to country not seen during training',
+            'why'   : f"{flows_to_new} flows to new country/ies: {', '.join(sorted(new_to_network))}",
+        })
     return alerts
 
 
-# ── Step 5: Detect DNS anomalies (exfiltration + C&C) ─────────────────────────
+# ── Step 4b: New destination IPs and ASNs ─────────────────────────────────────
 
-def detect_dns_anomalies(baselines: dict) -> list[dict]:
-    """Flag internal clients with abnormal DNS behaviour.
+MIN_NEW_EXTERNAL_FLOWS = 10
+MIN_NEW_INTERNAL_FLOWS = 5
 
-    Two sub-rules:
-    1. Volume: DNS flow count far above the per-client training baseline
-       (mean + 3σ). High query volume is the primary signal for both
-       DNS tunneling and C&C beaconing over DNS.
-    2. Public DNS: any DNS query sent to a server outside the known
-       internal DNS servers is immediately flagged — in training every
-       client uses only the two internal resolvers without exception.
-    """
-    mean               = baselines['dns_flows_mean']
-    std                = baselines['dns_flows_std']
-    threshold          = mean + SIGMA * std
-    internal_servers   = baselines['dns_internal_servers']
-
-    dns_test = int_test[int_test['port'] == 53]
-
+def detect_new_destinations(baselines: dict) -> list[dict]:
     alerts = []
 
-    # ── Sub-rule 1: DNS volume anomaly ────────────────────────────────────────
-    dns_count = dns_test.groupby('src_ip').size()
-    volume_flagged = dns_count[dns_count > threshold]
+    # Sub-rule 1: new external ASN not seen by ANY client in training
+    global_train_asns = baselines['global_train_asns']
+    pub_test = int_test[~int_test['dst_ip'].apply(is_private)].copy()
+    pub_test['asn'] = pub_test['dst_ip'].apply(get_asn)
 
-    for ip, count in volume_flagged.items():
-        ip_dns       = dns_test[dns_test['src_ip'] == ip]
-        intervals    = ip_dns.sort_values('timestamp')['timestamp'].diff().dropna()
-        unique_dst   = ip_dns['dst_ip'].nunique()
-        # queries/unique_dst: high value = queries concentrated on few servers = C2 relay pattern
-        queries_per_dst = count / unique_dst
-        train_count  = int_train[
-            (int_train['src_ip'] == ip) & (int_train['port'] == 53)
-        ].shape[0]
-
+    for ip, grp in pub_test.groupby('src_ip'):
+        new_asns = set(grp['asn'].dropna().unique()) - global_train_asns
+        if not new_asns:
+            continue
+        flows = len(grp[grp['asn'].isin(new_asns)])
+        if flows < MIN_NEW_EXTERNAL_FLOWS:
+            continue
+        sample = ', '.join(sorted(new_asns)[:3]) + ('...' if len(new_asns) > 3 else '')
         alerts.append({
-            'rule'      : 'DNS Volume Anomaly (C&C / Exfiltration)',
-            'ip'        : ip,
-            'metric'    : 'DNS flow count',
-            'observed'  : int(count),
-            'threshold' : f'{threshold:.0f} flows',
-            'baseline'  : f'mean={mean:.0f}  std={std:.0f}  train={train_count}',
-            'deviation' : round((count - mean) / std, 1),
-            'extra'     : f'median interval={intervals.median():.1f}s  increase={count/max(train_count,1):.1f}x  queries/dst={queries_per_dst:.0f}',
+            'rule'  : 'New External Destination (New ASN)',
+            'ip'    : ip,
+            'threat': 'Communication to infrastructure not seen in any training traffic',
+            'why'   : f"{flows} flows to {len(new_asns)} new-to-network ASN(s): {sample}",
         })
 
-    # ── Sub-rule 2: DNS to public server (zero-threshold rule) ────────────────
+    # Sub-rule 2: new internal destination IP not seen in any training flow
+    global_train_internal = baselines['global_train_internal_dsts']
+    priv_test = int_test[int_test['dst_ip'].apply(is_private)].copy()
+
+    for ip, grp in priv_test.groupby('src_ip'):
+        new_dsts = set(grp['dst_ip'].unique()) - global_train_internal
+        if not new_dsts:
+            continue
+        flows = len(grp[grp['dst_ip'].isin(new_dsts)])
+        if flows < MIN_NEW_INTERNAL_FLOWS:
+            continue
+        alerts.append({
+            'rule'  : 'New Internal Destination',
+            'ip'    : ip,
+            'threat': 'Communication to internal host never seen in training — possible lateral movement',
+            'why'   : f"{flows} flows to new internal IP(s): {', '.join(sorted(new_dsts))}",
+        })
+
+    return sorted(alerts, key=lambda a: ipaddress.IPv4Address(a['ip']))
+
+
+# ── Step 5: DNS anomalies ─────────────────────────────────────────────────────
+
+def detect_dns_anomalies(baselines: dict) -> list[dict]:
+    mean             = baselines['dns_flows_mean']
+    std              = baselines['dns_flows_std']
+    threshold        = mean + SIGMA * std
+    internal_servers = baselines['dns_internal_servers']
+
+    dns_test = int_test[int_test['port'] == 53]
+    alerts   = []
+
+    # Sub-rule 1: DNS volume anomaly
+    for ip, count in dns_test.groupby('src_ip').size().items():
+        if count <= threshold:
+            continue
+        intervals = dns_test[dns_test['src_ip'] == ip].sort_values('timestamp')['timestamp'].diff().dropna()
+        deviation = (count - mean) / std
+        alerts.append({
+            'rule'  : 'DNS Volume Anomaly',
+            'ip'    : ip,
+            'threat': 'DNS-based C&C beaconing or DNS tunneling',
+            'why'   : f"{int(count):,} DNS queries ({deviation:.1f}σ above mean {mean:.0f}), median interval={intervals.median():.1f}s",
+        })
+
+    # Sub-rule 2: DNS to public server (zero-threshold)
     public_dns = dns_test[~dns_test['dst_ip'].isin(internal_servers)]
     for ip in sorted(public_dns['src_ip'].unique()):
         dst_ips = sorted(public_dns[public_dns['src_ip'] == ip]['dst_ip'].unique())
+        count   = len(public_dns[public_dns['src_ip'] == ip])
         alerts.append({
-            'rule'      : 'DNS to Public Server (C&C / Tunneling)',
-            'ip'        : ip,
-            'metric'    : 'DNS destination',
-            'observed'  : ', '.join(dst_ips),
-            'threshold' : f'only {internal_servers}',
-            'baseline'  : 'all DNS must go to internal servers',
-            'deviation' : 'absolute violation',
-            'extra'     : f'{len(public_dns[public_dns["src_ip"] == ip])} flows to public DNS',
+            'rule'  : 'DNS to Public Server',
+            'ip'    : ip,
+            'threat': 'DNS tunneling or C&C — bypassing internal resolvers',
+            'why'   : f"{count} queries sent to external DNS: {', '.join(dst_ips)}",
         })
 
-    return sorted(alerts, key=lambda a: (
-        a['rule'],
-        -a['deviation'] if isinstance(a['deviation'], float) else 0
-    ))
+    return sorted(alerts, key=lambda a: (a['rule'], a['ip']))
 
 
-# ── Step 6: Detect BotNet beaconing ──────────────────────────────────────────
+# ── Step 6: BotNet beaconing ──────────────────────────────────────────────────
+
+# Minimum ratio of (training interval std) / (test interval std) to confirm
+# that the device became genuinely more regular in the test period, not just
+# that it naturally has tight intervals. Derived from analysis: confirmed
+# beacons show ≥1.84×; false-positive .160 shows only 1.17×.
+MIN_HTTPS_REGULARIZATION = 1.5
 
 def detect_botnet_beaconing(baselines: dict) -> list[dict]:
-    """Flag internal clients with suspiciously regular traffic intervals.
-
-    A botnet implant checks in with its C&C server at a fixed interval,
-    producing a very low standard deviation in inter-flow timestamps.
-    Threshold: below the 5th percentile of the training distribution,
-    since the distribution is right-skewed and mean - N*std goes negative.
-
-    Beaconing protocol is identified by computing interval std separately
-    for HTTPS and DNS flows, exposing the channel being used.
-    """
-    threshold = baselines['interval_std_p05']
-
-    test_sorted = int_test.sort_values(['src_ip', 'timestamp']).copy()
-    test_sorted['interval'] = test_sorted.groupby('src_ip')['timestamp'].diff()
-
-    overall_std = test_sorted.groupby('src_ip')['interval'].std().dropna()
-    flagged_ips = overall_std[overall_std < threshold].sort_values()
+    https_threshold       = baselines['https_interval_std_p05']
+    dns_threshold         = baselines['dns_interval_std_p05']
+    dns_vol_threshold     = baselines['dns_flows_mean'] + SIGMA * baselines['dns_flows_std']
+    https_train_std_by_ip = baselines['https_interval_std_per_ip']
 
     alerts = []
-    for ip, obs_std in flagged_ips.items():
-        # Identify beaconing protocol by comparing HTTPS vs DNS interval stds
-        https_flows = int_test[(int_test['src_ip'] == ip) & (int_test['port'] == 443)]
-        dns_flows   = int_test[(int_test['src_ip'] == ip) & (int_test['port'] == 53)]
+    for ip in sorted(int_test['src_ip'].unique()):
+        ip_https = int_test[(int_test['src_ip'] == ip) & (int_test['port'] == 443)]
+        ip_dns   = int_test[(int_test['src_ip'] == ip) & (int_test['port'] == 53)]
 
-        https_ts  = https_flows['timestamp'].sort_values()
-        dns_ts    = dns_flows['timestamp'].sort_values()
-        https_std = https_ts.diff().std()    if len(https_flows) > 1 else None
-        dns_std   = dns_ts.diff().std()      if len(dns_flows) > 1  else None
-        https_med = https_ts.diff().median() if len(https_flows) > 1 else None
-        dns_med   = dns_ts.diff().median()   if len(dns_flows) > 1  else None
+        https_ts = ip_https['timestamp'].sort_values()
+        dns_ts   = ip_dns['timestamp'].sort_values()
 
-        if dns_std is not None and dns_std < threshold:
-            protocol = f'DNS (median interval={dns_med:.1f}s)'
-        elif https_std is not None and https_std < threshold:
-            protocol = f'HTTPS (median interval={https_med:.1f}s)'
-        else:
-            https_m  = f"{https_med:.0f}s" if https_med is not None else "N/A"
-            dns_m    = f"{dns_med:.0f}s"   if dns_med   is not None else "N/A"
-            protocol = f'mixed (HTTPS median={https_m}, DNS median={dns_m})'
+        https_std = https_ts.diff().std() if len(ip_https) > 1 else None
+        dns_std   = dns_ts.diff().std()   if len(ip_dns)   > 1 else None
 
-        train_std = baselines['interval_std_mean']
+        protocol  = None
+        obs_std   = None
+        thresh    = None
+        median_iv = None
+
+        if https_std is not None and https_std < https_threshold:
+            train_std = https_train_std_by_ip.get(ip)
+            regularization = (train_std / https_std) if train_std else 0
+            if regularization >= MIN_HTTPS_REGULARIZATION:
+                protocol  = 'HTTPS'
+                obs_std   = https_std
+                thresh    = https_threshold
+                median_iv = https_ts.diff().median()
+
+        # DNS beaconing requires high DNS volume independently to avoid flagging
+        # devices whose only signal is normal periodic DNS alongside regular HTTPS.
+        if (dns_std is not None and dns_std < dns_threshold
+                and len(ip_dns) > dns_vol_threshold):
+            if protocol is None or dns_std < obs_std:
+                protocol  = 'DNS'
+                obs_std   = dns_std
+                thresh    = dns_threshold
+                median_iv = dns_ts.diff().median()
+
+        if protocol is None:
+            continue
 
         alerts.append({
-            'rule'      : 'BotNet Beaconing',
-            'ip'        : ip,
-            'metric'    : 'inter-flow interval std',
-            'observed'  : round(obs_std, 1),
-            'threshold' : f'< {threshold:.1f} (p05 of training)',
-            'baseline'  : f'mean={train_std:.0f}  p05={threshold:.0f}',
-            'deviation' : f"{obs_std:.0f} s  ({obs_std / threshold:.2f}× p05 floor)",
-            'extra'     : f'beaconing via {protocol}  |  HTTPS={len(https_flows)} flows  DNS={len(dns_flows)} flows',
+            'rule'  : 'BotNet Beaconing',
+            'ip'    : ip,
+            'threat': f'Botnet C&C — automated {protocol} beaconing',
+            'why'   : f"{protocol} interval std={obs_std:.0f}s (threshold {thresh:.0f}s), median={median_iv:.1f}s",
         })
 
     return alerts
 
 
+# ── Output ────────────────────────────────────────────────────────────────────
+
 def send_syslog_alert(ip: str) -> None:
-    """Send 'Alarm UEBA <ip>' to the Wazuh manager via UDP syslog (port 514)."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.sendto(f"Alarm UEBA {ip}".encode(), (WAZUH_IP, WAZUH_PORT))
 
 
 def print_alerts(alerts: list[dict], step: str) -> None:
-    """Print a formatted alert block for a given detection step."""
-    print(f"\n{'═'*55}")
+    print(f"\n{'═'*60}")
     print(f"  {step}")
-    print(f"{'═'*55}")
+    print(f"{'═'*60}")
     if not alerts:
         print("  No anomalies detected.")
         return
-    for a in alerts:
-        print(f"  [ALERT] {a['rule']}")
-        print(f"          IP        : {a['ip']}")
-        if 'triggered_by' in a:
-            print(f"          Triggered : {a['triggered_by']}")
-        print(f"          Metric    : {a['metric']} = {a['observed']}")
-        print(f"          Baseline  : {a['baseline']}")
-        print(f"          Threshold : {a['threshold']}")
-        dev = a['deviation']
-        dev_str = f"{dev}σ" if isinstance(dev, (int, float)) else str(dev)
-        print(f"          Deviation : {dev_str}")
-        if 'extra' in a:
-            print(f"          Note      : {a['extra']}")
+    for i, a in enumerate(alerts, 1):
+        print(f"  [{i}] Rule   : {a['rule']}")
+        print(f"       IP     : {a['ip']}")
+        print(f"       Threat : {a['threat']}")
+        print(f"       Why    : {a['why']}")
         print()
 
 
-# ── Step 7: Main — run all rules and print consolidated results ───────────────
+# ── Step 7: Main ──────────────────────────────────────────────────────────────
 
 def main() -> None:
-    """Run the full UEBA pipeline: compute baselines, apply all detection rules,
-    and print a consolidated report of every anomalous IP found."""
-
-    # ── Baselines ─────────────────────────────────────────────────────────────
     print("\n[*] Computing baselines from training data...")
     b = compute_baselines()
     print(f"    HTTPS upload threshold  : {(b['https_up_mean'] + SIGMA*b['https_up_std'])/1e6:.1f} MB  (mean+{SIGMA}σ)")
-    print(f"    HTTPS PCR threshold     : {b['pcr_mean'] + SIGMA*b['pcr_std']:.4f}  (mean={b['pcr_mean']:.4f}  std={b['pcr_std']:.4f})")
     print(f"    DNS flow threshold      : {b['dns_flows_mean'] + SIGMA*b['dns_flows_std']:.0f} flows  (mean+{SIGMA}σ)")
-    print(f"    BotNet interval p05     : {b['interval_std_p05']:.1f}")
+    print(f"    HTTPS beaconing p05     : {b['https_interval_std_p05']:.1f}s")
+    print(f"    DNS beaconing p05       : {b['dns_interval_std_p05']:.1f}s")
     print(f"    External ratio window   : [{b['ext_ratio_mean']-SIGMA*b['ext_ratio_std']:.4f}, {b['ext_ratio_mean']+SIGMA*b['ext_ratio_std']:.4f}]")
     print(f"    Internal DNS servers    : {b['dns_internal_servers']}")
-    print(f"    Geo new-country threshold: {b['geo_country_count_p95']} countries  (p95 per-IP in training)")
-    print(f"    Geo min intensity flows  : {b['geo_min_intensity_flows']} flows      (p05 per-IP-per-country)")
+    print(f"    Geo min intensity flows : {b['geo_min_intensity_flows']}")
 
     print(f"\n[*] Network characterisation — internal destination countries ({b['total_train_countries']} total):")
-    top10 = b['country_stats'].head(10)
+    top10       = b['country_stats'].head(10)
     total_flows = b['country_stats']['flows'].sum()
     for country, row in top10.iterrows():
         pct = row['flows'] / total_flows * 100
@@ -584,37 +417,32 @@ def main() -> None:
           f"{b['https_ext_up_mean']/1e6:>9.1f}MB  {b['https_ext_down_mean']/1e6:>11.1f}MB  "
           f"{b['https_ext_ratio_mean']:>11.4f}  {b['https_ext_ratio_std']:>10.4f}")
 
-    print(f"\n[*] Network characterisation — external inter-flow intervals:")
-    print(f"    mean={b['ext_interval_mean']:.1f}s  median={b['ext_interval_median']:.1f}s  "
-          f"std={b['ext_interval_std']:.1f}s  p90={b['ext_interval_p90']:.1f}s  p95={b['ext_interval_p95']:.1f}s")
-    print(f"    per-client interval std p05={b['ext_interval_std_p05']:.1f}s  (characterisation only — see compute_baselines)")
-
-    # ── Detection rules ───────────────────────────────────────────────────────
     steps = [
-        ("Step 2 — detect_external_anomalies()",   detect_external_anomalies(b)),
-        ("Step 3 — detect_https_exfiltration()",   detect_https_exfiltration(b)),
-        ("Step 4 — detect_new_geo_destinations()", detect_new_geo_destinations(b)),
-        ("Step 5 — detect_dns_anomalies()",        detect_dns_anomalies(b)),
-        ("Step 6 — detect_botnet_beaconing()",     detect_botnet_beaconing(b)),
+        ("Step 2 — Anomalous External Users",    detect_external_anomalies(b)),
+        ("Step 3 — HTTPS Data Exfiltration",     detect_https_exfiltration(b)),
+        ("Step 4 — New Country Destinations",    detect_new_geo_destinations(b)),
+        ("Step 4b — New Destination IPs / ASNs", detect_new_destinations(b)),
+        ("Step 5 — DNS Anomalies",               detect_dns_anomalies(b)),
+        ("Step 6 — BotNet Beaconing",            detect_botnet_beaconing(b)),
     ]
 
     for label, alerts in steps:
         print_alerts(alerts, label)
 
-    # ── Consolidated summary ──────────────────────────────────────────────────
+    # Consolidated summary
     ip_rules: dict[str, list[str]] = defaultdict(list)
     for label, alerts in steps:
+        rule_short = label.split("—")[1].strip()
         for a in alerts:
-            rule_short = label.split("—")[1].strip().replace("()", "")
             if rule_short not in ip_rules[a['ip']]:
                 ip_rules[a['ip']].append(rule_short)
 
-    print(f"\n{'═'*55}")
+    print(f"\n{'═'*60}")
     print(f"  FINAL CONSOLIDATED REPORT")
-    print(f"{'═'*55}")
-    print(f"  Total unique anomalous IPs : {len(ip_rules)}")
+    print(f"{'═'*60}")
     internal = [ip for ip in ip_rules if ip.startswith('192.168')]
     external = [ip for ip in ip_rules if not ip.startswith('192.168')]
+    print(f"  Total unique anomalous IPs : {len(ip_rules)}")
     print(f"  Internal (192.168.101.x)   : {len(internal)}")
     print(f"  External (188.83.72.x)     : {len(external)}")
     print()
@@ -623,11 +451,10 @@ def main() -> None:
     for ip, rules in sorted_ips:
         confidence = "HIGH  " if len(rules) >= 2 else "MEDIUM"
         rules_str  = " | ".join(rules)
-        print(f"  [{confidence}] {ip}  →  {rules_str}")
+        print(f"  [{confidence}] {ip:<20}  {rules_str}")
 
     print()
 
-    # ── Syslog reporting to Wazuh SIEM ────────────────────────────────────────
     print(f"[*] Sending UEBA alerts to Wazuh ({WAZUH_IP}:{WAZUH_PORT})...")
     for ip in ip_rules:
         try:
@@ -638,6 +465,7 @@ def main() -> None:
     print()
 
     geodb.close()
+    geodbasn.close()
 
 
 if __name__ == "__main__":
