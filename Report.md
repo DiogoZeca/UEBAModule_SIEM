@@ -554,7 +554,7 @@ None of these share an input or a computation path. When two of them agree on th
 | 192.168.101.41 | DNS Volume + BotNet | 39,493 DNS queries at an exact 5.0 s interval — extreme C2 beaconing via internal DNS relay, confirmed by both volume and timing |
 | 192.168.101.23 | DNS Volume + BotNet | 8,651 DNS queries at 5.0 s — same C2 pattern, smaller scale, same malware family |
 | 192.168.101.201 | DNS Volume + BotNet | 2,941 DNS queries at exact 5.0 s intervals confirmed independently by volume analysis (8.4σ above mean) and timing regularity — strong single-protocol C2 beaconing |
-| 192.168.101.207 | HTTPS Exfiltration + DNS Anomalies | 119 MB uploaded over HTTPS while simultaneously generating 1,418 DNS queries — active exfiltration running alongside a DNS beacon |
+| 192.168.101.207 | HTTPS Exfiltration + DNS Anomalies | 119 MB uploaded over HTTPS (3σ above threshold) while independently generating 1,418 DNS queries at an exact 5.0 s beacon interval — exfiltration and C2 heartbeat confirmed by two unrelated rules |
 | 192.168.101.72 | New Geo + New Destination | Contacted 15 new countries including RU, IR, UA and 354 new-to-network ASNs pointing at Russian hosting infrastructure — geographic and infrastructure expansion confirmed by two independent rules |
 | 192.168.101.36 | New Geo + New Destination | 904 flows to 17 new countries including RU, IR, IQ, KZ and 1,015 flows to 287 new-to-network ASNs — same infrastructure fingerprint as .72 and .125, consistent with coordinated exfiltration campaign |
 | 192.168.101.125 | New Geo + New Destination | 523 flows to 11 new countries including RU, IR, UA and 598 flows to 169 new-to-network ASNs — third device in the coordinated geo/infrastructure expansion group |
@@ -569,7 +569,7 @@ Grouping the 24 flagged devices by behaviour reveals eight distinct attack patte
 | Moderate HTTPS Exfiltration | .197, .26, .207 | 119–259 MB uploaded, 3–9σ above the 116.6 MB threshold |
 | DNS C&C Beaconing | .41, .23, .201, .148 | Exact 5.0 s query interval to internal resolvers — malware heartbeat routed through internal DNS relay |
 | HTTPS C&C Beaconing | .117, .157, .188 | Check-in intervals clustering between 100–103 s across three independent devices — single malware family, shared hardcoded timer |
-| Dual-Channel Implant | .207 | Simultaneous HTTPS exfiltration and DNS beaconing — active data staging running alongside a C2 heartbeat |
+| Exfiltration + C2 Beacon | .207 | HTTPS exfiltration (119 MB, 3σ) running alongside a DNS C2 beacon (1,418 queries at 5.0 s intervals) — two independent malicious behaviours confirmed by two independent rules |
 | Lateral Movement | .68, .138, .186 | Internal-to-internal TCP:443 traffic to IPs never seen as destinations in training; symmetric byte ratios (~1:1) inconsistent with web browsing — peer-to-peer command relay or lateral file transfer between compromised hosts |
 | Geo / Infrastructure Expansion | .36, .72, .125 | Traffic to countries and ASNs never seen in training, including Russian hosting providers (REG.RU, Cloud.ru, OBIT) — consistent with coordinated exfiltration to attacker-controlled infrastructure |
 | External Upload Anomaly | .61, .64, .174, .182, .210 | External clients breaking the tight 8.50 ratio invariant — three uploading proportionally more than normal, two downloading more than normal |
