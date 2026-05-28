@@ -115,6 +115,11 @@ def compute_baselines() -> dict:
     priv = int_train[int_train['dst_ip'].apply(is_private)]
     b['global_train_internal_dsts'] = set(priv['dst_ip'].unique())
 
+    # External destination fan-out: unique external dst_ips per src_ip (Step 4c)
+    ext_fan = pub.groupby('src_ip')['dst_ip'].nunique()
+    b['ext_fan_mean'] = ext_fan.mean()
+    b['ext_fan_std']  = ext_fan.std()
+
     # Beaconing: per-protocol interval std p05 and per-IP baseline (Step 6)
     for proto, port in [('https', 443), ('dns', 53)]:
         subset = int_train[int_train['port'] == port].sort_values(['src_ip', 'timestamp'])
@@ -261,6 +266,28 @@ def detect_new_destinations(baselines: dict) -> list[dict]:
     return sorted(alerts, key=lambda a: ipaddress.IPv4Address(a['ip']))
 
 
+# ── Step 4c: External destination fan-out ────────────────────────────────────
+
+def detect_external_fanout(baselines: dict) -> list[dict]:
+    mean      = baselines['ext_fan_mean']
+    std       = baselines['ext_fan_std']
+    threshold = mean + SIGMA * std
+
+    pub_test = int_test[~int_test['dst_ip'].apply(is_private)]
+    fan      = pub_test.groupby('src_ip')['dst_ip'].nunique()
+
+    alerts = []
+    for ip, count in fan[fan > threshold].items():
+        deviation = (count - mean) / std
+        alerts.append({
+            'rule'  : 'External Destination Fan-out',
+            'ip'    : ip,
+            'threat': 'Anomalous number of unique external destinations — possible C2 sweep or reconnaissance',
+            'why'   : f"{int(count)} unique external IPs ({deviation:.1f}σ above mean {mean:.0f}; threshold {threshold:.0f})",
+        })
+    return sorted(alerts, key=lambda a: ipaddress.IPv4Address(a['ip']))
+
+
 # ── Step 5: DNS anomalies ─────────────────────────────────────────────────────
 
 def detect_dns_anomalies(baselines: dict) -> list[dict]:
@@ -396,6 +423,7 @@ def main() -> None:
     print(f"    External ratio window   : [{b['ext_ratio_mean']-SIGMA*b['ext_ratio_std']:.4f}, {b['ext_ratio_mean']+SIGMA*b['ext_ratio_std']:.4f}]")
     print(f"    Internal DNS servers    : {b['dns_internal_servers']}")
     print(f"    Geo min intensity flows : {b['geo_min_intensity_flows']}")
+    print(f"    External fan-out threshold : {b['ext_fan_mean'] + SIGMA*b['ext_fan_std']:.0f} unique dst IPs  (mean+{SIGMA}σ)")
 
     print(f"\n[*] Network characterisation — internal destination countries ({b['total_train_countries']} total):")
     top10       = b['country_stats'].head(10)
@@ -422,6 +450,7 @@ def main() -> None:
         ("Step 3 — HTTPS Data Exfiltration",     detect_https_exfiltration(b)),
         ("Step 4 — New Country Destinations",    detect_new_geo_destinations(b)),
         ("Step 4b — New Destination IPs / ASNs", detect_new_destinations(b)),
+        ("Step 4c — External Destination Fan-out", detect_external_fanout(b)),
         ("Step 5 — DNS Anomalies",               detect_dns_anomalies(b)),
         ("Step 6 — BotNet Beaconing",            detect_botnet_beaconing(b)),
     ]

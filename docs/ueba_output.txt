@@ -10,8 +10,9 @@
     HTTPS beaconing p05     : 1881.3s
     DNS beaconing p05       : 6373.2s
     External ratio window   : [8.3817, 8.6226]
-    Internal DNS servers    : {'192.168.101.226', '192.168.101.229'}
+    Internal DNS servers    : {'192.168.101.229', '192.168.101.226'}
     Geo min intensity flows : 10
+    External fan-out threshold : 258 unique dst IPs  (mean+3σ)
 
 [*] Network characterisation — internal destination countries (36 total):
     PT     234,442 flows    2669.7 MB  (37.4%)
@@ -148,6 +149,30 @@
 
 
 ════════════════════════════════════════════════════════════
+  Step 4c — External Destination Fan-out
+════════════════════════════════════════════════════════════
+  [1] Rule   : External Destination Fan-out
+       IP     : 192.168.101.36
+       Threat : Anomalous number of unique external destinations — possible C2 sweep or reconnaissance
+       Why    : 639 unique external IPs (11.2σ above mean 118; threshold 258)
+
+  [2] Rule   : External Destination Fan-out
+       IP     : 192.168.101.72
+       Threat : Anomalous number of unique external destinations — possible C2 sweep or reconnaissance
+       Why    : 811 unique external IPs (14.9σ above mean 118; threshold 258)
+
+  [3] Rule   : External Destination Fan-out
+       IP     : 192.168.101.125
+       Threat : Anomalous number of unique external destinations — possible C2 sweep or reconnaissance
+       Why    : 409 unique external IPs (6.2σ above mean 118; threshold 258)
+
+  [4] Rule   : External Destination Fan-out
+       IP     : 192.168.101.207
+       Threat : Anomalous number of unique external destinations — possible C2 sweep or reconnaissance
+       Why    : 273 unique external IPs (3.3σ above mean 118; threshold 258)
+
+
+════════════════════════════════════════════════════════════
   Step 5 — DNS Anomalies
 ════════════════════════════════════════════════════════════
   [1] Rule   : DNS Volume Anomaly
@@ -217,13 +242,13 @@
   Internal (192.168.101.x)   : 19
   External (188.83.72.x)     : 5
 
+  [HIGH  ] 192.168.101.36        New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
+  [HIGH  ] 192.168.101.72        New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
+  [HIGH  ] 192.168.101.125       New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
+  [HIGH  ] 192.168.101.207       HTTPS Data Exfiltration | External Destination Fan-out | DNS Anomalies
   [HIGH  ] 192.168.101.23        DNS Anomalies | BotNet Beaconing
-  [HIGH  ] 192.168.101.36        New Country Destinations | New Destination IPs / ASNs
   [HIGH  ] 192.168.101.41        DNS Anomalies | BotNet Beaconing
-  [HIGH  ] 192.168.101.72        New Country Destinations | New Destination IPs / ASNs
-  [HIGH  ] 192.168.101.125       New Country Destinations | New Destination IPs / ASNs
   [HIGH  ] 192.168.101.201       DNS Anomalies | BotNet Beaconing
-  [HIGH  ] 192.168.101.207       HTTPS Data Exfiltration | DNS Anomalies
   [MEDIUM] 188.83.72.61          Anomalous External Users
   [MEDIUM] 188.83.72.64          Anomalous External Users
   [MEDIUM] 188.83.72.174         Anomalous External Users

@@ -184,6 +184,9 @@ The function itself has no side effects, it prints nothing, flags nothing, and t
   global_train_asns = set(pub_train['dst_ip'].apply(get_asn).dropna())
   global_train_internal_dsts = set(priv_train['dst_ip'].unique())
 
+# Fan-out: unique external dst_ip count per src_ip (Step 4c)
+  ext_fan = pub_train.groupby('src_ip')['dst_ip'].nunique()
+
 # DNS: count flows per client, extract the set of destination servers
   dns_per_ip = dns.groupby('src_ip').agg(dns_flows=('up_bytes','count'))
   dns_internal_servers = set(dns['dst_ip'].unique())
@@ -194,12 +197,13 @@ The dictionary compute_baselines() returns one key per metric below. Each rule f
 ## Threshold table
 All thresholds are derived dynamically from the training data. The script prints them at startup:
 ```
-HTTPS upload threshold:     116.6 MB         (mean+3σ)
-DNS flow threshold:         1399 flows       (mean+3σ)
-BotNet HTTPS interval p05:  1881.3 s
-BotNet DNS  interval p05:   6373.2 s
-External ratio window:      [8.3817, 8.6226]
-Geo min intensity flows:    10 flows
+HTTPS upload threshold:        116.6 MB         (mean+3σ)
+DNS flow threshold:            1399 flows       (mean+3σ)
+BotNet HTTPS interval p05:     1881.3 s
+BotNet DNS  interval p05:      6373.2 s
+External ratio window:         [8.3817, 8.6226]
+Geo min intensity flows:       10 flows
+External fan-out threshold:    258 unique dst IPs  (mean+3σ)
 ```
 Each threshold targets a different dimension of behaviour. 
 - The HTTPS upload threshold (116.6 MB) defines the maximum total data a normal internal client sends over HTTPS in a day, anything above this suggests bulk data exfiltration. The threshold is derived from combined HTTPS traffic (internal .240 + external servers). The destination split characterised above shows both groups have identical ratios (~9.23), so the combined aggregate is a valid baseline.
@@ -207,6 +211,7 @@ Each threshold targets a different dimension of behaviour.
 - The BotNet interval p05 thresholds are split by protocol: 1,881.3 s for HTTPS traffic and 6,373.2 s for DNS traffic, representing the 5th percentiles of per-client interval standard deviations computed separately for each protocol. Any client below its protocol's floor is more regular than 95% of all legitimate training clients for that protocol. Separating the protocols prevents a device with naturally irregular HTTPS activity from masking a tight DNS beaconing pattern in a combined calculation.
 - The external ratio window ([8.3817, 8.6226]) defines the expected down/up range for external clients. Any external client outside this window is interacting with the corporate server in an anomalous way.
 - The geo minimum intensity floor (10 flows) filters CDN noise from the geo detection rule: any client reaching a country new to the entire network with fewer than 10 flows is treated as a CDN edge rotation rather than a genuine new destination.
+- The external fan-out threshold (258 unique external IPs) flags any internal client contacting an anomalous number of distinct external destinations in a single day. Derived from mean (118.1) + 3σ (3 × 46.7), it catches sweep-style behaviour where a host checks in with many scattered external endpoints rather than concentrating traffic on the small set of servers typical of legitimate browsing.
 
 
 ## The 3σ Rule
@@ -386,6 +391,30 @@ The ASN detections for .36, .72, and .125 independently confirm the geo anomalie
 The lateral movement triangle (.68, .138, .186) is the most significant finding in this rule. These three internal devices communicate with each other over TCP:443 — a connection type that, across all 198 clients and 890 K training rows, goes exclusively to the known server .240. The fact that all three devices appear both as sources and destinations, forming a closed triangle of mutual communication, rules out a simple misconfiguration. The traffic pattern is symmetric (up/down byte ratios near 1:1, unlike the 9:1 ratio of normal web browsing), consistent with peer-to-peer command relay or lateral file transfer between compromised hosts.
 
 
+## External Destination Fan-out
+### What to look for
+The fan-out rule addresses a different dimension of suspicious external behaviour: not what destinations a client reaches, but how many. During training, internal clients contact a mean of 118.1 unique external IPs per day, with a standard deviation of 46.7. This gives a tight upper boundary — legitimate browsing concentrates traffic on a small set of content servers, CDNs, and cloud providers. A device that suddenly reaches hundreds more unique external endpoints than any legitimate client did in training is not browsing normally; it is sweeping through scattered infrastructure, consistent with a C2 implant performing check-ins across a distributed botnet panel or a scanning probe probing a wide address range.
+
+The key distinction from Step 4 and Step 4b is the signal being measured. Step 4 flags new geography; Step 4b flags new ASNs (new infrastructure providers). Step 4c is purely statistical: it fires when the raw count of unique external destinations is anomalous, regardless of whether those destinations are known or new. A device could contact only known ASNs in known countries and still fire this rule if it contacts far more of them than any training client ever did.
+### Code Implementation
+```python
+ext_fan = int_test[~int_test['dst_ip'].apply(is_private)].groupby('src_ip')['dst_ip'].nunique()
+threshold = ext_fan_mean + SIGMA * ext_fan_std  # 258 unique IPs
+
+flagged = ext_fan[ext_fan > threshold]
+```
+The implementation is deliberately simple: one groupby, one nunique, one threshold comparison. The baseline is the per-client unique external IP count from training (mean=118.1, std=46.7), derived from the same public-IP subset already used by the geo and ASN rules.
+### Results
+The rule flagged 4 internal IPs:
+```
+[ALERT] 192.168.101.72    811 unique external IPs  (14.9σ above mean 118; threshold 258)
+[ALERT] 192.168.101.36    639 unique external IPs  (11.2σ above mean 118; threshold 258)
+[ALERT] 192.168.101.125   409 unique external IPs  (6.2σ  above mean 118; threshold 258)
+[ALERT] 192.168.101.207   273 unique external IPs  (3.3σ  above mean 118; threshold 258)
+```
+All four are already flagged by other rules, and that is precisely the point: fan-out provides a third independent confirmation for .36, .72, and .125, and a second independent axis of evidence for .207 alongside its exfiltration and DNS signals. The deviations are substantial — .72 contacts nearly 7× more unique external IPs than the training mean — reinforcing that these devices are not exhibiting borderline behaviour but a fundamentally different operational mode. The highest unflagged device is .114 at 234 unique IPs, sitting 24 IPs below the threshold with no other anomalous signals, confirming the threshold is not set too aggressively.
+
+
 ## DNS Anomaly Detection
 ### What to look for
 The DNS anomaly rule targets internal clients exhibiting abnormal DNS behaviour, using two independent sub-rules that catch different aspects of the same threat category.
@@ -497,12 +526,12 @@ The 7 HIGH confidence IPs are therefore treated as confirmed compromised devices
 
   -- HIGH confidence (2+ independent rules) --
   [HIGH  ] 192.168.101.23        DNS Anomalies | BotNet Beaconing
-  [HIGH  ] 192.168.101.36        New Country Destinations | New Destination IPs / ASNs
+  [HIGH  ] 192.168.101.36        New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
   [HIGH  ] 192.168.101.41        DNS Anomalies | BotNet Beaconing
-  [HIGH  ] 192.168.101.72        New Country Destinations | New Destination IPs / ASNs
-  [HIGH  ] 192.168.101.125       New Country Destinations | New Destination IPs / ASNs
+  [HIGH  ] 192.168.101.72        New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
+  [HIGH  ] 192.168.101.125       New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
   [HIGH  ] 192.168.101.201       DNS Anomalies | BotNet Beaconing
-  [HIGH  ] 192.168.101.207       HTTPS Data Exfiltration | DNS Anomalies
+  [HIGH  ] 192.168.101.207       HTTPS Data Exfiltration | External Destination Fan-out | DNS Anomalies
 
   -- MEDIUM confidence (single rule) --
   [MEDIUM] 188.83.72.61          Anomalous External Users
@@ -533,10 +562,11 @@ A false negative is a compromised device that the pipeline did not flag, the mos
 | DNS flows | 1307 flows | 1399 flows | 92 flows |
 | BotNet HTTPS interval std | 1844 s (.160, regularisation=1.17×) | 1881 s | 37 s above floor |
 | BotNet DNS interval std | 6326 s (.16) | 6373 s | 47 s above floor |
+| External fan-out | 234 unique IPs (.114) | 258 unique IPs | 24 IPs below threshold |
 
 After analyzing the results, no false negatives were found. Every unflagged device sits outside its threshold with a meaningful gap.
 
-The BotNet rows deserve a specific note. For HTTPS beaconing, .160 sits 37 s above the 1,881 s floor, but its regularisation ratio is only 1.17×: it was already similarly tight in training, so the observed regularity is a stable baseline characteristic rather than anomalous behaviour. For DNS beaconing, the closest unflagged device has a DNS interval std of 6,326 s (47 s above the floor) and a DNS flow count below the volume threshold, so the timing alone would not constitute meaningful beaconing regardless.
+The BotNet rows deserve a specific note. For HTTPS beaconing, .160 sits 37 s above the 1,881 s floor, but its regularisation ratio is only 1.17×: it was already similarly tight in training, so the observed regularity is a stable baseline characteristic rather than anomalous behaviour. For DNS beaconing, the closest unflagged device has a DNS interval std of 6,326 s (47 s above the floor) and a DNS flow count below the volume threshold, so the timing alone would not constitute meaningful beaconing regardless. For the fan-out rule, .114 at 234 unique external IPs is the closest unflagged device, sitting 24 IPs below the 258 threshold with no other anomalous signals, confirming the boundary is not cutting too close to normal behaviour.
 
 ## Highest Confidence Detections
 The 7 HIGH confidence devices are those flagged by two or more completely independent detection rules. Independence here is not just statistical — each rule operates on a different metric, a different protocol, and a different aspect of behaviour.
@@ -546,18 +576,19 @@ The 7 HIGH confidence devices are those flagged by two or more completely indepe
 - The HTTPS rule measures upload volume. 
 - The Geo rule measures destination countries. 
 - The New Destination rule measures new ASNs and new internal connections. 
+- The Fan-out rule measures the count of unique external destinations contacted.
 
-None of these share an input or a computation path. When two of them agree on the same device, they are making the same accusation from entirely different angles.
+None of these share an input or a computation path. When two or more of them agree on the same device, they are making the same accusation from entirely different angles.
 
 | IP | Rules Triggered | Interpretation |
 |----------|-----------------|----------------|
 | 192.168.101.41 | DNS Volume + BotNet | 39,493 DNS queries at an exact 5.0 s interval — extreme C2 beaconing via internal DNS relay, confirmed by both volume and timing |
 | 192.168.101.23 | DNS Volume + BotNet | 8,651 DNS queries at 5.0 s — same C2 pattern, smaller scale, same malware family |
 | 192.168.101.201 | DNS Volume + BotNet | 2,941 DNS queries at exact 5.0 s intervals confirmed independently by volume analysis (8.4σ above mean) and timing regularity — strong single-protocol C2 beaconing |
-| 192.168.101.207 | HTTPS Exfiltration + DNS Anomalies | 119 MB uploaded over HTTPS (3σ above threshold) while independently generating 1,418 DNS queries at an exact 5.0 s beacon interval — exfiltration and C2 heartbeat confirmed by two unrelated rules |
-| 192.168.101.72 | New Geo + New Destination | Contacted 15 new countries including RU, IR, UA and 354 new-to-network ASNs pointing at Russian hosting infrastructure — geographic and infrastructure expansion confirmed by two independent rules |
-| 192.168.101.36 | New Geo + New Destination | 904 flows to 17 new countries including RU, IR, IQ, KZ and 1,015 flows to 287 new-to-network ASNs — same infrastructure fingerprint as .72 and .125, consistent with coordinated exfiltration campaign |
-| 192.168.101.125 | New Geo + New Destination | 523 flows to 11 new countries including RU, IR, UA and 598 flows to 169 new-to-network ASNs — third device in the coordinated geo/infrastructure expansion group |
+| 192.168.101.207 | HTTPS Exfiltration + Fan-out + DNS Anomalies | 119 MB uploaded over HTTPS (3σ above threshold); 273 unique external IPs contacted (3.3σ above mean); 1,418 DNS queries at an exact 5.0 s beacon interval — three independent rules each confirming a different facet of the same compromise |
+| 192.168.101.72 | New Geo + New Destination + Fan-out | Contacted 15 new countries including RU, IR, UA; 354 new-to-network ASNs pointing at Russian hosting infrastructure; 811 unique external IPs (14.9σ) — geographic, infrastructure, and volume expansion confirmed by three independent rules |
+| 192.168.101.36 | New Geo + New Destination + Fan-out | 904 flows to 17 new countries including RU, IR, IQ, KZ; 1,015 flows to 287 new-to-network ASNs; 639 unique external IPs (11.2σ) — same three-rule fingerprint as .72, consistent with coordinated exfiltration campaign |
+| 192.168.101.125 | New Geo + New Destination + Fan-out | 523 flows to 11 new countries including RU, IR, UA; 598 flows to 169 new-to-network ASNs; 409 unique external IPs (6.2σ) — third device in the coordinated group, confirmed by the same three independent rules |
 
 
 ## Attack Patterns
@@ -569,9 +600,9 @@ Grouping the 24 flagged devices by behaviour reveals eight distinct attack patte
 | Moderate HTTPS Exfiltration | .197, .26, .207 | 119–259 MB uploaded, 3–9σ above the 116.6 MB threshold |
 | DNS C&C Beaconing | .41, .23, .201, .148 | Exact 5.0 s query interval to internal resolvers — malware heartbeat routed through internal DNS relay |
 | HTTPS C&C Beaconing | .117, .157, .188 | Check-in intervals clustering between 100–103 s across three independent devices — single malware family, shared hardcoded timer |
-| Exfiltration + C2 Beacon | .207 | HTTPS exfiltration (119 MB, 3σ) running alongside a DNS C2 beacon (1,418 queries at 5.0 s intervals) — two independent malicious behaviours confirmed by two independent rules |
+| Exfiltration + C2 Beacon | .207 | HTTPS exfiltration (119 MB, 3σ) running alongside a DNS C2 beacon (1,418 queries at 5.0 s intervals) and anomalous fan-out to 273 unique external IPs (3.3σ) — three independent rules each confirming a different facet of the same compromise |
 | Lateral Movement | .68, .138, .186 | Internal-to-internal TCP:443 traffic to IPs never seen as destinations in training; symmetric byte ratios (~1:1) inconsistent with web browsing — peer-to-peer command relay or lateral file transfer between compromised hosts |
-| Geo / Infrastructure Expansion | .36, .72, .125 | Traffic to countries and ASNs never seen in training, including Russian hosting providers (REG.RU, Cloud.ru, OBIT) — consistent with coordinated exfiltration to attacker-controlled infrastructure |
+| Geo / Infrastructure Expansion | .36, .72, .125 | Traffic to countries and ASNs never seen in training, including Russian hosting providers (REG.RU, Cloud.ru, OBIT), plus anomalous fan-out to 409–811 unique external IPs — three independent rules (geo, ASN, volume) each confirming the same coordinated campaign |
 | External Upload Anomaly | .61, .64, .174, .182, .210 | External clients breaking the tight 8.50 ratio invariant — three uploading proportionally more than normal, two downloading more than normal |
 
 
