@@ -10,7 +10,7 @@
     HTTPS beaconing p05     : 1881.3s
     DNS beaconing p05       : 6373.2s
     External ratio window   : [8.3817, 8.6226]
-    Internal DNS servers    : {'192.168.101.229', '192.168.101.226'}
+    Internal DNS servers    : {'192.168.101.226', '192.168.101.229'}
     Geo min intensity flows : 10
     External fan-out threshold : 258 unique dst IPs  (mean+3σ)
 
@@ -31,6 +31,20 @@
     Destination                    Flows   Up/client   Down/client   Ratio mean   Ratio std
     Internal server (.240)       157,055        9.0MB         83.2MB       9.2255      0.5809
     External HTTPS servers       627,522       36.1MB        333.6MB       9.2460      0.2511
+
+════════════════════════════════════════════════════════════
+  Step 1 — New Source IPs
+════════════════════════════════════════════════════════════
+  [1] Rule   : New Source IP
+       IP     : 192.168.101.11
+       Threat : Device with no training baseline — possible rogue endpoint or network implant
+       Why    : 1508 flows (1309 HTTPS, 199 DNS) from IP absent in entire training period
+
+  [2] Rule   : New Source IP
+       IP     : 192.168.101.93
+       Threat : Device with no training baseline — possible rogue endpoint or network implant
+       Why    : 3788 flows (3286 HTTPS, 502 DNS) from IP absent in entire training period
+
 
 ════════════════════════════════════════════════════════════
   Step 2 — Anomalous External Users
@@ -238,8 +252,8 @@
 ════════════════════════════════════════════════════════════
   FINAL CONSOLIDATED REPORT
 ════════════════════════════════════════════════════════════
-  Total unique anomalous IPs : 24
-  Internal (192.168.101.x)   : 19
+  Total unique anomalous IPs : 26
+  Internal (192.168.101.x)   : 21
   External (188.83.72.x)     : 5
 
   [HIGH  ] 192.168.101.36        New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
@@ -254,9 +268,11 @@
   [MEDIUM] 188.83.72.174         Anomalous External Users
   [MEDIUM] 188.83.72.182         Anomalous External Users
   [MEDIUM] 188.83.72.210         Anomalous External Users
+  [MEDIUM] 192.168.101.11        New Source IPs
   [MEDIUM] 192.168.101.14        HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.26        HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.68        New Destination IPs / ASNs
+  [MEDIUM] 192.168.101.93        New Source IPs
   [MEDIUM] 192.168.101.117       BotNet Beaconing
   [MEDIUM] 192.168.101.138       New Destination IPs / ASNs
   [MEDIUM] 192.168.101.148       DNS Anomalies
@@ -268,6 +284,8 @@
   [MEDIUM] 192.168.101.208       HTTPS Data Exfiltration
 
 [*] Sending UEBA alerts to Wazuh (172.100.0.12:514)...
+    → Alarm UEBA 192.168.101.11
+    → Alarm UEBA 192.168.101.93
     → Alarm UEBA 188.83.72.174
     → Alarm UEBA 188.83.72.182
     → Alarm UEBA 188.83.72.210

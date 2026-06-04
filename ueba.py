@@ -135,7 +135,31 @@ def compute_baselines() -> dict:
     b['ext_ratio_mean'] = ext_per_ip['ratio'].mean()
     b['ext_ratio_std']  = ext_per_ip['ratio'].std()
 
+    # Known internal source IPs from training (Step 1)
+    b['train_src_ips'] = set(int_train['src_ip'].unique())
+
     return b
+
+
+# ── Step 1: New source IPs ────────────────────────────────────────────────────
+
+def detect_new_source_ips(baselines: dict) -> list[dict]:
+    train_ips = baselines['train_src_ips']
+    new_ips   = sorted(set(int_test['src_ip'].unique()) - train_ips,
+                       key=lambda ip: ipaddress.IPv4Address(ip))
+    alerts = []
+    for ip in new_ips:
+        grp      = int_test[int_test['src_ip'] == ip]
+        total    = len(grp)
+        https_n  = int((grp['port'] == 443).sum())
+        dns_n    = int((grp['port'] == 53).sum())
+        alerts.append({
+            'rule'  : 'New Source IP',
+            'ip'    : ip,
+            'threat': 'Device with no training baseline — possible rogue endpoint or network implant',
+            'why'   : f"{total} flows ({https_n} HTTPS, {dns_n} DNS) from IP absent in entire training period",
+        })
+    return alerts
 
 
 # ── Step 2: Anomalous external users ──────────────────────────────────────────
@@ -446,6 +470,7 @@ def main() -> None:
           f"{b['https_ext_ratio_mean']:>11.4f}  {b['https_ext_ratio_std']:>10.4f}")
 
     steps = [
+        ("Step 1 — New Source IPs",              detect_new_source_ips(b)),
         ("Step 2 — Anomalous External Users",    detect_external_anomalies(b)),
         ("Step 3 — HTTPS Data Exfiltration",     detect_https_exfiltration(b)),
         ("Step 4 — New Country Destinations",    detect_new_geo_destinations(b)),
