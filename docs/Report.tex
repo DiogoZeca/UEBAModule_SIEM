@@ -447,15 +447,15 @@ Metric & Value \\
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-Mean & 807.6 s \\
-Median & 104.0 s \\
-Std & 11879.4 s \\
-p90 & 191.0 s \\
-p95 & 3475.0 s \\
+Mean & 8.076 s \\
+Median & 1.040 s \\
+Std & 118.794 s \\
+p90 & 1.910 s \\
+p95 & 34.750 s \\
 \end{longtable}
 
-The gap between median (104s) and mean (807s), and the jump from p90
-(191s) to p95 (3,475s), confirms a heavy-tailed distribution, consistent
+The gap between median (1.04 s) and mean (8.08 s), and the jump from p90
+(1.91 s) to p95 (34.75 s), confirms a heavy-tailed distribution, consistent
 with human web browsing: short active bursts separated by reading
 pauses, with occasional long overnight idle gaps.
 
@@ -538,8 +538,8 @@ script prints them at startup:
 New source IP:                 none — binary set membership check
 HTTPS upload threshold:        116.6 MB         (mean+3σ)
 DNS flow threshold:            1399 flows       (mean+3σ)
-BotNet HTTPS interval p05:     1881.3 s
-BotNet DNS  interval p05:      6373.2 s
+BotNet HTTPS interval p05:     18.81 s
+BotNet DNS  interval p05:      63.73 s
 External ratio window:         [8.3817, 8.6226]
 Geo min intensity flows:       10 flows
 External fan-out threshold:    258 unique dst IPs  (mean+3σ)
@@ -551,7 +551,7 @@ Each threshold targets a different dimension of behaviour. Not every rule requir
   \item \textbf{New source IP (Step 1)} requires no threshold at all. Any internal device that generates traffic in the test period but had zero presence during training is flagged unconditionally. The only computation is a set membership check against all source IPs observed in training.
   \item \textbf{HTTPS upload threshold (116.6 MB)} defines the maximum total data a normal internal client sends over HTTPS in a day; anything above this suggests bulk data exfiltration. The threshold is derived from combined HTTPS traffic (internal .240 + external servers). Both groups have identical ratios ($\sim$9.23), so the combined aggregate is a valid baseline.
   \item \textbf{DNS flow count threshold (1,399 flows)} flags clients generating an abnormal number of DNS queries, the primary signal for DNS-based C\&C beaconing.
-  \item \textbf{BotNet interval p05 thresholds} are split by protocol: 1,881.3\,s for HTTPS and 6,373.2\,s for DNS, representing the 5th percentiles of per-client interval standard deviations. Any client below its protocol's floor is more regular than 95\% of all legitimate training clients. Separating the protocols prevents a device with naturally irregular HTTPS activity from masking a tight DNS beaconing pattern.
+  \item \textbf{BotNet interval p05 thresholds} are split by protocol: 18.81\,s for HTTPS and 63.73\,s for DNS, representing the 5th percentiles of per-client interval standard deviations. Any client below its protocol's floor is more regular than 95\% of all legitimate training clients. Separating the protocols prevents a device with naturally irregular HTTPS activity from masking a tight DNS beaconing pattern.
   \item \textbf{External ratio window ([8.3817, 8.6226])} defines the expected down/up range for external clients. Any external client outside this window is interacting with the corporate server in an anomalous way.
   \item \textbf{Geo minimum intensity floor (10 flows)} filters CDN noise: any client reaching a country new to the entire network with fewer than 10 flows is treated as a CDN edge rotation rather than a deliberate new destination.
   \item \textbf{External fan-out threshold (258 unique IPs)} flags any internal client contacting an anomalous number of distinct external destinations in a single day. Derived from mean (118.1) + 3$\sigma$ (3 $\times$ 46.7), it catches sweep-style behaviour where a host checks in with many scattered external endpoints.
@@ -579,23 +579,6 @@ The alternatives were evaluated and rejected:
   \item \textbf{2$\sigma$} (97.7\% coverage) would produce approximately 4 false positives per rule per day, creating a noise floor that drowns real signals.
   \item \textbf{4$\sigma$} (99.9937\% coverage) would set the bar so high that moderate exfiltration (a device uploading 200\,MB when the mean is 45\,MB) would go undetected.
 \end{itemize}
-
-\hypertarget{exception}{%
-\subsection{Exception}\label{exception}}
-
-The BotNet rule cannot use ``mean − 3σ'' because the inter-flow interval
-standard deviation distribution in training is heavily right-skewed
-(most clients have moderate regularity, but a few have very high
-interval variability, pulling the mean up).
-
-The training values are: mean = 8,350 s, std = 6,668 s. Applying ``mean
-− 3σ'' gives 8,350 − 3 × 6,668 = −11,654 s; a negative threshold, which
-is mathematically meaningless for a standard deviation. Instead, we use
-the 5th percentile (p05 = 1,741.9 s) of the training distribution as the
-floor. This represents the lower boundary of normal behaviour
-empirically observed in training. Any client with an inter-flow interval
-std below this value is more regular than 95\% of all normal clients,
-making it a strong candidate for beaconing behaviour.
 
 \hypertarget{country-distribution}{%
 \subsection{Country Distribution}\label{country-distribution}}
@@ -707,10 +690,14 @@ distribution to mis-model.
 The rule flagged 2 internal IPs:
 
 \begin{verbatim}
-[ALERT] 192.168.101.11   1,508 flows  (1,309 HTTPS, 199 DNS)
-          — absent from entire training period
-[ALERT] 192.168.101.93   3,788 flows  (3,286 HTTPS, 502 DNS)
-          — absent from entire training period
+[ALERT] 192.168.101.11
+  Why: 1508 flows (1309 HTTPS, 199 DNS), HTTPS upload: 14.3 MB,
+       unique ext IPs: 64 — all metrics sub-threshold,
+       absent entire training period
+[ALERT] 192.168.101.93
+  Why: 3788 flows (3286 HTTPS, 502 DNS), HTTPS upload: 38.0 MB,
+       unique ext IPs: 101 — all metrics sub-threshold,
+       absent entire training period
 \end{verbatim}
 
 Both devices generate thousands of flows in the test period yet were
@@ -796,25 +783,6 @@ The results revealed two groups:
 
 The 188.83.72.61 at 6.7σ is the most extreme anomaly in the entire
 external dataset.
-
-A second detection signal was implemented and evaluated before
-finalising this rule. Since compute\_baselines() already computes the
-per-client inter-flow interval distribution for characterisation, the
-p05 of per-client interval standard deviation (2,132.6 s) was added as a
-second threshold alongside the ratio: any external client whose
-inter-flow interval std fell below this floor (more regular than 95\% of
-all training clients) would also be flagged, using OR logic.
-
-Applied to the test data, this produced 25 flagged IPs instead of 5. The
-additional 20 were triggered exclusively by the interval signal with
-completely normal ratios. The problem is statistical: a p05 floor
-applied to 196 test clients produces approximately 10 false positives by
-chance alone, and the borderline interval-only hits (iv\_std ranging
-1,839--2,130 s against a floor of 2,132.6 s) are too marginal to be
-convincing detections.
-
-The interval signal was removed and the floor retained as
-characterisation output only.
 
 \hypertarget{internal-anomaly-detection-https-exfiltration}{%
 \subsection{Internal Anomaly Detection (HTTPS
@@ -1204,7 +1172,7 @@ Interval & Exact, clock-driven & Irregular \\
 \end{longtable}
 
 What we detected in this dataset is C\&C beaconing, not exfiltration:
-the exact 5.0s median interval across all flagged devices is the
+the exact 0.05s median interval across all flagged devices is the
 signature of a malware timer. Actual data exfiltration in this dataset
 happens over HTTPS, as seen in the previous rule.
 
@@ -1232,14 +1200,14 @@ internal IPs. DNS-2 produced zero alerts --- no client in the test
 period sent DNS queries to a public server:
 
 \begin{verbatim}
-[ALERT] 192.168.101.41   flows=39,493  median interval=5.0s  increase=129×
-[ALERT] 192.168.101.23   flows=8,651   median interval=5.0s  increase=8.6×
-[ALERT] 192.168.101.201  flows=2,941   median interval=5.0s  increase=15.7×
-[ALERT] 192.168.101.148  flows=1,661   median interval=5.0s  increase=4.8×
-[ALERT] 192.168.101.207  flows=1,418   median interval=5.0s  increase=3.4×
+[ALERT] 192.168.101.41   flows=39,493  median interval=0.05s  increase=129×
+[ALERT] 192.168.101.23   flows=8,651   median interval=0.05s  increase=8.6×
+[ALERT] 192.168.101.201  flows=2,941   median interval=0.05s  increase=15.7×
+[ALERT] 192.168.101.148  flows=1,661   median interval=0.05s  increase=4.8×
+[ALERT] 192.168.101.207  flows=1,418   median interval=0.05s  increase=3.4×
 \end{verbatim}
 
-Every flagged device shows an exact 5.0s median interval between DNS
+Every flagged device shows an exact 0.05s median interval between DNS
 queries: a clock-driven malware timer firing consistently throughout the
 day. The .41 is the most extreme case at 39,493 flows, 129× its own
 training baseline, with queries concentrated almost entirely on the two
@@ -1270,31 +1238,19 @@ Separating the protocols is essential: a device with irregular HTTPS
 browsing and regular DNS beaconing would have its DNS signal masked by
 the HTTPS noise in a combined calculation.
 
-The first approach was to apply the standard mean − 3σ threshold,
-flagging any client below this floor. This immediately broke down: the
-inter-flow interval std distribution in training is heavily
-right-skewed, with a mean of 8,350 s and a std of 6,668 s. Applying mean
-− 3σ gives: $8{,}350 - 3 \times 6{,}668 = -11{,}654$\,s A negative
-standard deviation is mathematically meaningless. No threshold can be
-set this way on a right-skewed distribution.
+Mean − 3σ cannot be applied: both per-protocol interval std distributions are right-skewed (a long tail of high-variance clients pulls the mean up), so the formula produces a negative lower bound for HTTPS and is equally inapplicable for DNS. No meaningful floor can be set this way on a right-skewed distribution.
 
 \subsubsection{Code Implementation}
 
-
-The solution was to use the 5th percentile (p05) of each protocol's
-training distribution as the threshold floor. This represents the
-empirical lower boundary of normal behaviour per protocol: any client in
-the test period with an interval std below the HTTPS floor (1,881.3 s)
-is more regular than 95\% of all legitimate HTTPS sessions in training;
-similarly for DNS (6,373.2 s).
+The threshold for each protocol is its 5th percentile (p05) of per-client interval standard deviations from training. This is the empirical lower boundary of normal behaviour: any client in the test period with an interval std below the HTTPS floor (18.81 s) is more regular than 95\% of all legitimate HTTPS sessions in training; similarly for DNS (63.73 s).
 
 For HTTPS beaconing, a regularisation ratio check is added on top of the
 threshold: the device's own training-period HTTPS interval std must be
 at least 1.5× higher than its test-period std. This guards against
 devices that were naturally tight in training from being falsely
-flagged. A device with train\_std = 2,000 s and test\_std = 1,800 s has
-barely changed; a device with train\_std = 12,000 s and test\_std =
-1,800 s has genuinely become more regular --- only the latter is
+flagged. A device with train\_std = 20.00 s and test\_std = 18.00 s has
+barely changed; a device with train\_std = 120.00 s and test\_std =
+18.00 s has genuinely become more regular --- only the latter is
 beaconing.
 
 DNS beaconing includes an additional volume guard: the DNS flow count
@@ -1324,42 +1280,42 @@ The rule flagged 6 internal IPs, split into two per-protocol beaconing
 channels:
 
 \begin{verbatim}
-[ALERT] 192.168.101.23   DNS  interval std=913s   (threshold 6373s)  median=5.0s
-[ALERT] 192.168.101.41   DNS  interval std=1260s  (threshold 6373s)  median=5.0s
-[ALERT] 192.168.101.201  DNS  interval std=3662s  (threshold 6373s)  median=5.0s
-[ALERT] 192.168.101.117  HTTPS interval std=1035s (threshold 1881s)
-          median=100.0s  regularisation=8.46×
-[ALERT] 192.168.101.157  HTTPS interval std=1864s (threshold 1881s)
-          median=103.0s  regularisation=6.49×
-[ALERT] 192.168.101.188  HTTPS interval std=1827s (threshold 1881s)
-          median=103.0s  regularisation=1.84×
+[ALERT] 192.168.101.23   DNS  interval std=9.13s   (threshold 63.73s)  median=0.05s
+[ALERT] 192.168.101.41   DNS  interval std=12.60s  (threshold 63.73s)  median=0.05s
+[ALERT] 192.168.101.201  DNS  interval std=36.62s  (threshold 63.73s)  median=0.05s
+[ALERT] 192.168.101.117  HTTPS interval std=10.35s (threshold 18.81s)
+          median=1.00s  regularisation=8.46×
+[ALERT] 192.168.101.157  HTTPS interval std=18.64s (threshold 18.81s)
+          median=1.03s  regularisation=6.49×
+[ALERT] 192.168.101.188  HTTPS interval std=18.27s (threshold 18.81s)
+          median=1.03s  regularisation=1.84×
 \end{verbatim}
 
 The 6 devices split cleanly by protocol:
 \begin{itemize}
-  \item The DNS beacons (.23, .41, .201) fire at an exact 5.0\,s median interval through the internal DNS resolvers, consistent with Step~5's findings. The same malware heartbeat confirmed by both volume and timing analysis.
-  \item The HTTPS beacons (.117, .157, .188) fire at intervals clustering tightly between 100 and 103 seconds --- the fingerprint of a single malware family sharing the same hardcoded C2 timer.
+  \item The DNS beacons (.23, .41, .201) fire at an exact 0.05\,s median interval through the internal DNS resolvers, consistent with Step~5's findings. The same malware heartbeat confirmed by both volume and timing analysis.
+  \item The HTTPS beacons (.117, .157, .188) fire at intervals clustering tightly between 1.00 and 1.03 seconds --- the fingerprint of a single malware family sharing the same hardcoded C2 timer.
 \end{itemize}
 
 The regularisation ratio validates that each HTTPS beacon genuinely
 changed behaviour in the test period. .117 shows the most dramatic
-change: its training HTTPS interval std was $\sim$8,740 s
-(irregular browsing); in the test period it dropped to 1,035 s (8.46×
+change: its training HTTPS interval std was $\sim$87.40 s
+(irregular browsing); in the test period it dropped to 10.35 s (8.46×
 more regular). .157 shows a 6.49× change. Even the borderline .188 shows
 a 1.84× change, comfortably above the 1.5× threshold.
 
 Two previously considered devices were correctly excluded by the
 per-protocol approach. .32 and .160 appeared suspicious under a
-combined-channel analysis because mixing their DNS 5 s intervals with
-HTTPS $\sim$100 s intervals produced an artificially low
+combined-channel analysis because mixing their DNS 0.05 s intervals with
+HTTPS $\sim$1.00 s intervals produced an artificially low
 overall std. With per-protocol analysis, .32's DNS flow count falls
 below the 1,399-flow volume guard, and .160's HTTPS regularisation ratio
 is only 1.17× --- barely changed from training, not a genuine
 behavioural shift.
 
-The 192.168.101.148, flagged by DNS-1 with 1,661 flows at a 5.0 s median
+The 192.168.101.148, flagged by DNS-1 with 1,661 flows at a 0.05 s median
 interval, is not flagged by this rule. Although its DNS query count
-exceeds the volume threshold, its DNS interval std is above the 6,373 s
+exceeds the volume threshold, its DNS interval std is above the 63.73 s
 p05 floor: the queries arrive in bursts rather than uniformly spaced, so
 the timing alone does not meet the beaconing definition. Step 5 and Step
 6 together cover both cases --- volume-anomalous DNS and timing-regular
@@ -1465,9 +1421,9 @@ Gap
 \endlastfoot
 HTTPS upload & 105.2 MB & 116.6 MB & 11.4 MB \\
 DNS flows & 1307 flows & 1399 flows & 92 flows \\
-BotNet HTTPS interval std & 1844 s (.160, regularisation=1.17×) & 1881 s
-& 37 s above floor \\
-BotNet DNS interval std & 6326 s (.16) & 6373 s & 47 s above floor \\
+BotNet HTTPS interval std & 18.44 s (.160, regularisation=1.17×) & 18.81 s
+& 0.37 s above floor \\
+BotNet DNS interval std & 63.26 s (.16) & 63.73 s & 0.47 s above floor \\
 External fan-out & 234 unique IPs (.114) & 258 unique IPs & 24 IPs below
 threshold \\
 New Source IP & N/A --- binary invariant & N/A & No false negatives
@@ -1478,11 +1434,11 @@ After analyzing the results, no false negatives were found. Every
 unflagged device sits outside its threshold with a meaningful gap.
 
 The BotNet rows deserve a specific note. For HTTPS beaconing, .160 sits
-37 s above the 1,881 s floor, but its regularisation ratio is only
+0.37 s above the 18.81 s floor, but its regularisation ratio is only
 1.17×: it was already similarly tight in training, so the observed
 regularity is a stable baseline characteristic rather than anomalous
 behaviour. For DNS beaconing, the closest unflagged device has a DNS
-interval std of 6,326 s (47 s above the floor) and a DNS flow count
+interval std of 63.26 s (0.47 s above the floor) and a DNS flow count
 below the volume threshold, so the timing alone would not constitute
 meaningful beaconing regardless. For the fan-out rule, .114 at 234
 unique external IPs is the closest unflagged device, sitting 24 IPs
@@ -1543,16 +1499,16 @@ Interpretation
 \bottomrule\noalign{}
 \endlastfoot
 192.168.101.41 & DNS Volume + BotNet & 39,493 DNS queries at an exact
-5.0 s interval --- extreme C2 beaconing via internal DNS relay,
+0.05 s interval --- extreme C2 beaconing via internal DNS relay,
 confirmed by both volume and timing \\
-192.168.101.23 & DNS Volume + BotNet & 8,651 DNS queries at 5.0 s ---
+192.168.101.23 & DNS Volume + BotNet & 8,651 DNS queries at 0.05 s ---
 same C2 pattern, smaller scale, same malware family \\
-192.168.101.201 & DNS Volume + BotNet & 2,941 DNS queries at exact 5.0 s
+192.168.101.201 & DNS Volume + BotNet & 2,941 DNS queries at exact 0.05 s
 intervals confirmed independently by volume analysis (8.4σ above mean)
 and timing regularity --- strong single-protocol C2 beaconing \\
 192.168.101.207 & HTTPS Exfiltration + Fan-out + DNS Anomalies & 119 MB
 uploaded over HTTPS (3σ above threshold); 273 unique external IPs
-contacted (3.3σ above mean); 1,418 DNS queries at an exact 5.0 s beacon
+contacted (3.3σ above mean); 1,418 DNS queries at an exact 0.05 s beacon
 interval --- three independent rules each confirming a different facet
 of the same compromise \\
 192.168.101.72 & New Geo + New Destination + Fan-out & Contacted 15 new
@@ -1597,14 +1553,14 @@ single day, 183--316σ above baseline --- bulk data dumps, likely
 automated \\
 Moderate HTTPS Exfiltration & .197, .26, .207 & 119--259 MB uploaded,
 3--9σ above the 116.6 MB threshold \\
-DNS C\&C Beaconing & .41, .23, .201, .148 & Exact 5.0 s query interval
+DNS C\&C Beaconing & .41, .23, .201, .148 & Exact 0.05 s query interval
 to internal resolvers --- malware heartbeat routed through internal DNS
 relay \\
 HTTPS C\&C Beaconing & .117, .157, .188 & Check-in intervals clustering
-between 100--103 s across three independent devices --- single malware
+between 1.00--1.03 s across three independent devices --- single malware
 family, shared hardcoded timer \\
 Exfiltration + C2 Beacon & .207 & HTTPS exfiltration (119 MB, 3σ)
-running alongside a DNS C2 beacon (1,418 queries at 5.0 s intervals) and
+running alongside a DNS C2 beacon (1,418 queries at 0.05 s intervals) and
 anomalous fan-out to 273 unique external IPs (3.3σ) --- three
 independent rules each confirming a different facet of the same
 compromise \\
@@ -1637,7 +1593,7 @@ proportionally more than normal, two downloading more than normal \\
 \subsection{Sending the Alert}\label{sending-the-alert}}
 
 Once all anomalous IPs are identified, each one is reported to the Wazuh
-manager by sending a UDP syslog message in the format ``Alarm UEBA ''
+manager by sending a UDP syslog message in the format ``Alarm UEBA \textless{}ip\textgreater{}''
 --- exactly as prescribed by the spec. The implementation uses a raw
 Python socket, requiring no external tool or Wazuh agent on the
 monitoring machine:
@@ -1655,11 +1611,11 @@ One packet is sent per flagged IP. All 26 were successfully delivered to
 
 \begin{verbatim}
 [*] Sending UEBA alerts to Wazuh (172.100.0.12:514)...
-      → Alarm UEBA 192.168.101.23
-      → Alarm UEBA 192.168.101.36
-      → Alarm UEBA 192.168.101.41
+      → Alarm UEBA 192.168.101.11
+      → Alarm UEBA 192.168.101.93
+      → Alarm UEBA 188.83.72.174
       ...
-      → Alarm UEBA 192.168.101.208   (24 total)
+      → Alarm UEBA 192.168.101.188   (26 total)
 \end{verbatim}
 
 \hypertarget{decoder-and-rule}{%

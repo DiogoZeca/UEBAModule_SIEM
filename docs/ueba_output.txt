@@ -32,18 +32,25 @@
     Internal server (.240)       157,055        9.0MB         83.2MB       9.2255      0.5809
     External HTTPS servers       627,522       36.1MB        333.6MB       9.2460      0.2511
 
+[*] Network characterisation — external client inter-flow intervals:
+    Mean   : 8.08 s
+    Median : 1.04 s
+    Std    : 118.79 s
+    p90    : 1.91 s
+    p95    : 34.75 s
+
 ════════════════════════════════════════════════════════════
   Step 1 — New Source IPs
 ════════════════════════════════════════════════════════════
   [1] Rule   : New Source IP
        IP     : 192.168.101.11
        Threat : Device with no training baseline — possible rogue endpoint or network implant
-       Why    : 1508 flows (1309 HTTPS, 199 DNS) from IP absent in entire training period
+       Why    : 1508 flows (1309 HTTPS, 199 DNS), HTTPS upload: 14.3 MB, unique ext IPs: 64 — all metrics sub-threshold, absent entire training period
 
   [2] Rule   : New Source IP
        IP     : 192.168.101.93
        Threat : Device with no training baseline — possible rogue endpoint or network implant
-       Why    : 3788 flows (3286 HTTPS, 502 DNS) from IP absent in entire training period
+       Why    : 3788 flows (3286 HTTPS, 502 DNS), HTTPS upload: 38.0 MB, unique ext IPs: 101 — all metrics sub-threshold, absent entire training period
 
 
 ════════════════════════════════════════════════════════════

@@ -122,12 +122,23 @@ def compute_baselines() -> dict:
     b['ext_fan_mean'] = ext_fan.mean()
     b['ext_fan_std']  = ext_fan.std()
 
-    # Beaconing: per-protocol interval std p05 and per-IP baseline (Step 6)
+    # Beaconing: per-protocol interval std p05, distribution stats, and per-IP baseline (Step 6)
     for proto, port in [('https', 443), ('dns', 53)]:
         subset = int_train[int_train['port'] == port].sort_values(['src_ip', 'timestamp'])
         iv_std = subset.groupby('src_ip')['timestamp'].apply(lambda x: x.diff().std()).dropna()
         b[f'{proto}_interval_std_p05']    = iv_std.quantile(0.05)
         b[f'{proto}_interval_std_per_ip'] = iv_std.to_dict()
+        b[f'{proto}_interval_std_mean']   = iv_std.mean()
+        b[f'{proto}_interval_std_std']    = iv_std.std()
+
+    # External inter-flow interval characterisation (Task 1-iv)
+    ext_sorted = ext_train.sort_values(['src_ip', 'timestamp'])
+    ext_iv_all = ext_sorted.groupby('src_ip')['timestamp'].diff().dropna()
+    b['ext_interval_mean']   = ext_iv_all.mean()         / 100
+    b['ext_interval_median'] = ext_iv_all.median()       / 100
+    b['ext_interval_std']    = ext_iv_all.std()          / 100
+    b['ext_interval_p90']    = ext_iv_all.quantile(0.90) / 100
+    b['ext_interval_p95']    = ext_iv_all.quantile(0.95) / 100
 
     # External client ratio baseline (Step 2)
     ext_per_ip = ext_train.groupby('src_ip').agg(
@@ -151,15 +162,19 @@ def detect_new_source_ips(baselines: dict) -> list[dict]:
                        key=lambda ip: ipaddress.IPv4Address(ip))
     alerts = []
     for ip in new_ips:
-        grp      = int_test[int_test['src_ip'] == ip]
-        total    = len(grp)
-        https_n  = int((grp['port'] == 443).sum())
-        dns_n    = int((grp['port'] == 53).sum())
+        grp          = int_test[int_test['src_ip'] == ip]
+        total        = len(grp)
+        https_n      = int((grp['port'] == 443).sum())
+        dns_n        = int((grp['port'] == 53).sum())
+        https_up_mb  = float(grp[grp['port'] == 443]['up_bytes'].sum()) / 1e6
+        ext_ips      = int(grp[~grp['dst_ip'].apply(is_private)]['dst_ip'].nunique())
         alerts.append({
             'rule'  : 'New Source IP',
             'ip'    : ip,
             'threat': 'Device with no training baseline — possible rogue endpoint or network implant',
-            'why'   : f"{total} flows ({https_n} HTTPS, {dns_n} DNS) from IP absent in entire training period",
+            'why'   : (f"{total} flows ({https_n} HTTPS, {dns_n} DNS), "
+                       f"HTTPS upload: {https_up_mb:.1f} MB, unique ext IPs: {ext_ips} "
+                       f"— all metrics sub-threshold, absent entire training period"),
         })
     return alerts
 
@@ -470,6 +485,13 @@ def main() -> None:
     print(f"    {'External HTTPS servers':<26}  {b['https_ext_flows']:>8,}  "
           f"{b['https_ext_up_mean']/1e6:>9.1f}MB  {b['https_ext_down_mean']/1e6:>11.1f}MB  "
           f"{b['https_ext_ratio_mean']:>11.4f}  {b['https_ext_ratio_std']:>10.4f}")
+
+    print(f"\n[*] Network characterisation — external client inter-flow intervals:")
+    print(f"    Mean   : {b['ext_interval_mean']:.2f} s")
+    print(f"    Median : {b['ext_interval_median']:.2f} s")
+    print(f"    Std    : {b['ext_interval_std']:.2f} s")
+    print(f"    p90    : {b['ext_interval_p90']:.2f} s")
+    print(f"    p95    : {b['ext_interval_p95']:.2f} s")
 
     steps = [
         ("Step 1 — New Source IPs",              detect_new_source_ips(b)),
