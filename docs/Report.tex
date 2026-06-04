@@ -641,6 +641,49 @@ In several cases the first approach produced too many false positives or
 broke down statistically, requiring iteration before arriving at a clean
 result.
 
+\hypertarget{rule-design-rationale}{%
+\subsection{Rule Design Rationale}\label{rule-design-rationale}}
+
+The rules are designed around the project's five detection requirements.
+The table below maps each requirement to the implemented step(s) and the
+signal dimension each measures.
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.32}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.18}}
+  >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.50}}@{}}
+\toprule\noalign{}
+Spec Requirement & Step(s) & Signal dimension \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+(i) BotNet activities & Step 6 & Inter-flow timing regularity per protocol \\
+(ii) HTTPS data exfiltration & Step 3 & Upload volume \\
+(ii) DNS data exfiltration & Step 5 sub-rule 1 & DNS query volume \\
+(iii) C\&C activities using DNS & Step 5 sub-rule 2 + Step 6 (DNS) & Resolver bypass + timing regularity \\
+(iv) Anomalous external destinations & Steps 4, 4b, 4c & Geography, ASN infrastructure, unique IP count \\
+(v) External users anomalous & Step 2 & Down/up byte ratio \\
+\textit{(bonus)} Rogue/new devices & Step 1 & Set membership — no threshold needed \\
+\end{longtable}
+
+Steps 4, 4b, and 4c address the same threat category from three
+independent dimensions: new countries (geography), new ASNs
+(infrastructure provider), and anomalous unique destination count
+(breadth). Splitting them ensures that a compromise staying within known
+geography but using new hosting, or staying within known infrastructure
+but sweeping unusually many endpoints, is still caught.
+
+Step 5 and Step 6 both target DNS-based threats but measure different
+things: Step 5 measures query volume (how many), Step 6 measures timing
+regularity (how evenly spaced). A bursty DNS tunnel can have high volume
+without tight timing; a slow-rate beacon can have tight timing without
+high volume. Step 1 is a bonus rule beyond the spec minimum, added after
+discovering that two devices in the test set generate thousands of flows
+while staying deliberately sub-threshold on every statistical metric ---
+the only detection that cannot be evaded by volume calibration is a
+binary set membership check.
+
 \hypertarget{new-source-ip-detection}{%
 \subsection{New Source IP Detection}\label{new-source-ip-detection}}
 
