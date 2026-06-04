@@ -7,10 +7,10 @@
 [*] Computing baselines from training data...
     HTTPS upload threshold  : 116.6 MB  (mean+3σ)
     DNS flow threshold      : 1399 flows  (mean+3σ)
-    HTTPS beaconing p05     : 1881.3s
-    DNS beaconing p05       : 6373.2s
+    HTTPS beaconing p05     : 18.81s
+    DNS beaconing p05       : 63.73s
     External ratio window   : [8.3817, 8.6226]
-    Internal DNS servers    : {'192.168.101.226', '192.168.101.229'}
+    Internal DNS servers    : {'192.168.101.229', '192.168.101.226'}
     Geo min intensity flows : 10
     External fan-out threshold : 258 unique dst IPs  (mean+3σ)
 
@@ -192,27 +192,27 @@
   [1] Rule   : DNS Volume Anomaly
        IP     : 192.168.101.148
        Threat : DNS-based C&C beaconing or DNS tunneling
-       Why    : 1,661 DNS queries (3.9σ above mean 536), median interval=5.0s
+       Why    : 1,661 DNS queries (3.9σ above mean 536), median interval=0.05s
 
   [2] Rule   : DNS Volume Anomaly
        IP     : 192.168.101.201
        Threat : DNS-based C&C beaconing or DNS tunneling
-       Why    : 2,941 DNS queries (8.4σ above mean 536), median interval=5.0s
+       Why    : 2,941 DNS queries (8.4σ above mean 536), median interval=0.05s
 
   [3] Rule   : DNS Volume Anomaly
        IP     : 192.168.101.207
        Threat : DNS-based C&C beaconing or DNS tunneling
-       Why    : 1,418 DNS queries (3.1σ above mean 536), median interval=5.0s
+       Why    : 1,418 DNS queries (3.1σ above mean 536), median interval=0.05s
 
   [4] Rule   : DNS Volume Anomaly
        IP     : 192.168.101.23
        Threat : DNS-based C&C beaconing or DNS tunneling
-       Why    : 8,651 DNS queries (28.2σ above mean 536), median interval=5.0s
+       Why    : 8,651 DNS queries (28.2σ above mean 536), median interval=0.05s
 
   [5] Rule   : DNS Volume Anomaly
        IP     : 192.168.101.41
        Threat : DNS-based C&C beaconing or DNS tunneling
-       Why    : 39,493 DNS queries (135.5σ above mean 536), median interval=5.0s
+       Why    : 39,493 DNS queries (135.5σ above mean 536), median interval=0.05s
 
 
 ════════════════════════════════════════════════════════════
@@ -221,32 +221,32 @@
   [1] Rule   : BotNet Beaconing
        IP     : 192.168.101.117
        Threat : Botnet C&C — automated HTTPS beaconing
-       Why    : HTTPS interval std=1035s (threshold 1881s), median=100.0s
+       Why    : HTTPS interval std=10.35s (threshold 18.81s), median=1.00s
 
   [2] Rule   : BotNet Beaconing
        IP     : 192.168.101.157
        Threat : Botnet C&C — automated HTTPS beaconing
-       Why    : HTTPS interval std=1864s (threshold 1881s), median=103.0s
+       Why    : HTTPS interval std=18.64s (threshold 18.81s), median=1.03s
 
   [3] Rule   : BotNet Beaconing
        IP     : 192.168.101.188
        Threat : Botnet C&C — automated HTTPS beaconing
-       Why    : HTTPS interval std=1827s (threshold 1881s), median=103.0s
+       Why    : HTTPS interval std=18.27s (threshold 18.81s), median=1.03s
 
   [4] Rule   : BotNet Beaconing
        IP     : 192.168.101.201
        Threat : Botnet C&C — automated DNS beaconing
-       Why    : DNS interval std=3662s (threshold 6373s), median=5.0s
+       Why    : DNS interval std=36.62s (threshold 63.73s), median=0.05s
 
   [5] Rule   : BotNet Beaconing
        IP     : 192.168.101.23
        Threat : Botnet C&C — automated DNS beaconing
-       Why    : DNS interval std=913s (threshold 6373s), median=5.0s
+       Why    : DNS interval std=9.13s (threshold 63.73s), median=0.05s
 
   [6] Rule   : BotNet Beaconing
        IP     : 192.168.101.41
        Threat : Botnet C&C — automated DNS beaconing
-       Why    : DNS interval std=1260s (threshold 6373s), median=5.0s
+       Why    : DNS interval std=12.60s (threshold 63.73s), median=0.05s
 
 
 ════════════════════════════════════════════════════════════

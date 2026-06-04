@@ -76,7 +76,9 @@ def compute_baselines() -> dict:
     b['https_up_std']  = https_per_ip['total_up'].std()
 
     # HTTPS destination split: internal server vs external (characterisation only)
-    INTERNAL_HTTPS_SERVER = '192.168.101.240'
+    INTERNAL_HTTPS_SERVER = (
+        https[https['dst_ip'].apply(is_private)]['dst_ip'].mode()[0]
+    )
     for label, subset in [('int', https[https['dst_ip'] == INTERNAL_HTTPS_SERVER]),
                           ('ext', https[https['dst_ip'] != INTERNAL_HTTPS_SERVER])]:
         per_ip = subset.groupby('src_ip').agg(
@@ -333,7 +335,7 @@ def detect_dns_anomalies(baselines: dict) -> list[dict]:
             'rule'  : 'DNS Volume Anomaly',
             'ip'    : ip,
             'threat': 'DNS-based C&C beaconing or DNS tunneling',
-            'why'   : f"{int(count):,} DNS queries ({deviation:.1f}σ above mean {mean:.0f}), median interval={intervals.median():.1f}s",
+            'why'   : f"{int(count):,} DNS queries ({deviation:.1f}σ above mean {mean:.0f}), median interval={intervals.median()/100:.2f}s",
         })
 
     # Sub-rule 2: DNS to public server (zero-threshold)
@@ -407,7 +409,7 @@ def detect_botnet_beaconing(baselines: dict) -> list[dict]:
             'rule'  : 'BotNet Beaconing',
             'ip'    : ip,
             'threat': f'Botnet C&C — automated {protocol} beaconing',
-            'why'   : f"{protocol} interval std={obs_std:.0f}s (threshold {thresh:.0f}s), median={median_iv:.1f}s",
+            'why'   : f"{protocol} interval std={obs_std/100:.2f}s (threshold {thresh/100:.2f}s), median={median_iv/100:.2f}s",
         })
 
     return alerts
@@ -442,8 +444,8 @@ def main() -> None:
     b = compute_baselines()
     print(f"    HTTPS upload threshold  : {(b['https_up_mean'] + SIGMA*b['https_up_std'])/1e6:.1f} MB  (mean+{SIGMA}σ)")
     print(f"    DNS flow threshold      : {b['dns_flows_mean'] + SIGMA*b['dns_flows_std']:.0f} flows  (mean+{SIGMA}σ)")
-    print(f"    HTTPS beaconing p05     : {b['https_interval_std_p05']:.1f}s")
-    print(f"    DNS beaconing p05       : {b['dns_interval_std_p05']:.1f}s")
+    print(f"    HTTPS beaconing p05     : {b['https_interval_std_p05']/100:.2f}s")
+    print(f"    DNS beaconing p05       : {b['dns_interval_std_p05']/100:.2f}s")
     print(f"    External ratio window   : [{b['ext_ratio_mean']-SIGMA*b['ext_ratio_std']:.4f}, {b['ext_ratio_mean']+SIGMA*b['ext_ratio_std']:.4f}]")
     print(f"    Internal DNS servers    : {b['dns_internal_servers']}")
     print(f"    Geo min intensity flows : {b['geo_min_intensity_flows']}")
