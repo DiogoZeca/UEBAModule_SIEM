@@ -1693,24 +1693,40 @@ One packet is sent per flagged IP. All 31 were successfully delivered to
 
 With the Wazuh stack running and all 31 syslog packets delivered,
 navigating to Security Events and applying the DQL filter rule.id:
-100201 (as it was used in the classes) shows one event per flagged IP: 31 hits, each carrying data.srcip
-with the anomalous device's address, rule.level = 7, and decoder.name =
-ueba\_alarm. \includegraphics{Wazuh_dashboard.png}
+100201 (as it was used in the classes) shows one event per flagged IP:
+31 hits, each carrying data.srcip with the anomalous device's address,
+rule.level = 7, and decoder.name = ueba\_alarm.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{Wazuh_dashboard.png}
+\end{figure}
 
 \hypertarget{conclusion}{%
 \subsection{Conclusion}\label{conclusion}}
 
-This integration pattern, demonstrates that any monitoring system can
-feed alerts into a SIEM without requiring a Wazuh agent on the
-monitoring machine. The Wazuh manager acts as a centralised collection
-point: once the decoder and rule are in place, any source that speaks
-syslog can contribute structured, queryable events to the same dashboard
-used for all other security monitoring.
+The UEBA module identified 31 anomalous devices (21 internal and 10
+external) across nine distinct behavioural patterns in the test
+period. Every threshold was derived exclusively from the training
+dataset, ensuring that no test-period information influenced the
+baselines and that each detection reflects a genuine deviation from
+established normal behaviour.
 
-One limitation worth noting: UDP syslog provides no delivery
-acknowledgement. A packet dropped under network congestion is silently
-lost with no retry. For a production deployment where missing an alert
-is unacceptable, TCP syslog or a Wazuh agent on the monitoring host
-would be the preferred approach.
+The pipeline demonstrates that a small set of complementary statistical
+rules, each measuring a different dimension of behaviour, can cover a
+broad threat surface without redundancy. Cumulative upload volume catches
+both bulk and low-and-slow exfiltration; timing regularity exposes
+botnet implants that leave no volumetric footprint; geographic and
+infrastructure novelty flags coordinated reconnaissance campaigns; and
+set-membership checks catch rogue devices that deliberately stay below
+every volume threshold.
+
+The seven HIGH-confidence detections, each corroborated by two or more
+independent rules measuring entirely different signals, represent the
+strongest candidates for immediate escalation. The 24 MEDIUM-confidence
+detections provide a prioritised triage list where every alert carries
+an explicit justification tied to a specific observed value and its
+distance from the training baseline, giving an analyst the context
+needed to make an informed decision rather than a bare IP address.
 
 \end{document}
