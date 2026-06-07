@@ -10,9 +10,10 @@
     HTTPS beaconing p05     : 18.81s
     DNS beaconing p05       : 63.73s
     External ratio window   : [8.3817, 8.6226]
-    Internal DNS servers    : {'192.168.101.229', '192.168.101.226'}
-    Geo min intensity flows : 10
+    Internal DNS servers    : {'192.168.101.226', '192.168.101.229'}
+    Geo min intensity flows : 3 flows  (p10 of per-IP/country flow counts)
     External fan-out threshold : 258 unique dst IPs  (mean+3σ)
+    External automation threshold : 16.16s  (training minimum — no training client was ever below this)
 
 [*] Network characterisation — internal destination countries (36 total):
     PT     234,442 flows    2669.7 MB  (37.4%)
@@ -83,6 +84,35 @@
 
 
 ════════════════════════════════════════════════════════════
+  Step 2b — External Automation
+════════════════════════════════════════════════════════════
+  [1] Rule   : External Automation
+       IP     : 188.83.72.32
+       Threat : Non-human access pattern — possible bot, scraper, or automated attack tool
+       Why    : Inter-flow interval std=2.02s (threshold 16.16s — training minimum) — regularity below any training client, median interval=8.00s
+
+  [2] Rule   : External Automation
+       IP     : 188.83.72.46
+       Threat : Non-human access pattern — possible bot, scraper, or automated attack tool
+       Why    : Inter-flow interval std=2.02s (threshold 16.16s — training minimum) — regularity below any training client, median interval=8.00s
+
+  [3] Rule   : External Automation
+       IP     : 188.83.72.48
+       Threat : Non-human access pattern — possible bot, scraper, or automated attack tool
+       Why    : Inter-flow interval std=2.03s (threshold 16.16s — training minimum) — regularity below any training client, median interval=8.00s
+
+  [4] Rule   : External Automation
+       IP     : 188.83.72.166
+       Threat : Non-human access pattern — possible bot, scraper, or automated attack tool
+       Why    : Inter-flow interval std=2.00s (threshold 16.16s — training minimum) — regularity below any training client, median interval=8.00s
+
+  [5] Rule   : External Automation
+       IP     : 188.83.72.185
+       Threat : Non-human access pattern — possible bot, scraper, or automated attack tool
+       Why    : Inter-flow interval std=0.51s (threshold 16.16s — training minimum) — regularity below any training client, median interval=0.91s
+
+
+════════════════════════════════════════════════════════════
   Step 3 — HTTPS Data Exfiltration
 ════════════════════════════════════════════════════════════
   [1] Rule   : HTTPS Data Exfiltration
@@ -122,17 +152,17 @@
   [1] Rule   : New Country Destination
        IP     : 192.168.101.125
        Threat : Traffic to country not seen during training
-       Why    : 523 flows to new country/ies: BG, CZ, DK, FI, IR, LV, PL, PY, RU, SC, UA
+       Why    : 523 flows to new country/ies: BG, CZ, DK, FI, IR, LV, PL, PY, RU, SC, UA (11.7% of total traffic)
 
   [2] Rule   : New Country Destination
        IP     : 192.168.101.36
        Threat : Traffic to country not seen during training
-       Why    : 904 flows to new country/ies: AR, BA, BG, BY, CZ, EE, FI, GE, HU, IQ, IR, KZ, LU, LV, PL, RU, UA
+       Why    : 904 flows to new country/ies: AR, BA, BG, BY, CZ, EE, FI, GE, HU, IQ, IR, KZ, LU, LV, PL, RU, UA (13.5% of total traffic)
 
   [3] Rule   : New Country Destination
        IP     : 192.168.101.72
        Threat : Traffic to country not seen during training
-       Why    : 1157 flows to new country/ies: BD, BY, BZ, EE, FI, GR, HR, IR, KZ, LU, LV, NG, PL, RU, UA
+       Why    : 1157 flows to new country/ies: BD, BY, BZ, EE, FI, GR, HR, IR, KZ, LU, LV, NG, PL, RU, UA (13.1% of total traffic)
 
 
 ════════════════════════════════════════════════════════════
@@ -259,9 +289,9 @@
 ════════════════════════════════════════════════════════════
   FINAL CONSOLIDATED REPORT
 ════════════════════════════════════════════════════════════
-  Total unique anomalous IPs : 26
+  Total unique anomalous IPs : 31
   Internal (192.168.101.x)   : 21
-  External (188.83.72.x)     : 5
+  External (188.83.72.x)     : 10
 
   [HIGH  ] 192.168.101.36        New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
   [HIGH  ] 192.168.101.72        New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
@@ -270,10 +300,15 @@
   [HIGH  ] 192.168.101.23        DNS Anomalies | BotNet Beaconing
   [HIGH  ] 192.168.101.41        DNS Anomalies | BotNet Beaconing
   [HIGH  ] 192.168.101.201       DNS Anomalies | BotNet Beaconing
+  [MEDIUM] 188.83.72.32          External Automation
+  [MEDIUM] 188.83.72.46          External Automation
+  [MEDIUM] 188.83.72.48          External Automation
   [MEDIUM] 188.83.72.61          Anomalous External Users
   [MEDIUM] 188.83.72.64          Anomalous External Users
+  [MEDIUM] 188.83.72.166         External Automation
   [MEDIUM] 188.83.72.174         Anomalous External Users
   [MEDIUM] 188.83.72.182         Anomalous External Users
+  [MEDIUM] 188.83.72.185         External Automation
   [MEDIUM] 188.83.72.210         Anomalous External Users
   [MEDIUM] 192.168.101.11        New Source IPs
   [MEDIUM] 192.168.101.14        HTTPS Data Exfiltration
@@ -298,6 +333,11 @@
     → Alarm UEBA 188.83.72.210
     → Alarm UEBA 188.83.72.61
     → Alarm UEBA 188.83.72.64
+    → Alarm UEBA 188.83.72.32
+    → Alarm UEBA 188.83.72.46
+    → Alarm UEBA 188.83.72.48
+    → Alarm UEBA 188.83.72.166
+    → Alarm UEBA 188.83.72.185
     → Alarm UEBA 192.168.101.187
     → Alarm UEBA 192.168.101.14
     → Alarm UEBA 192.168.101.208

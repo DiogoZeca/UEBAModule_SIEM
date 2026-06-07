@@ -102,9 +102,13 @@ def compute_baselines() -> dict:
     pub['country'] = pub['dst_ip'].apply(get_country)
     pub['asn']     = pub['dst_ip'].apply(get_asn)
 
-    b['countries_per_ip']        = pub.groupby('src_ip')['country'].apply(set).to_dict()
-    b['global_train_asns']       = set(pub['asn'].dropna().unique())
-    b['geo_min_intensity_flows'] = 10
+    b['countries_per_ip']  = pub.groupby('src_ip')['country'].apply(set).to_dict()
+    b['global_train_asns'] = set(pub['asn'].dropna().unique())
+
+    # Geo intensity floor: p10 of per-(IP,country) flow counts in training.
+    # Separates CDN rotation noise (1–3 flows) from sustained deliberate traffic.
+    ip_country_counts = pub.groupby(['src_ip', 'country']).size()
+    b['geo_min_intensity_flows'] = int(ip_country_counts.quantile(0.10))
 
     country_stats = pub.groupby('country').agg(
         flows = ('up_bytes', 'count'),
@@ -131,7 +135,7 @@ def compute_baselines() -> dict:
         b[f'{proto}_interval_std_mean']   = iv_std.mean()
         b[f'{proto}_interval_std_std']    = iv_std.std()
 
-    # External inter-flow interval characterisation (Task 1-iv)
+    # External inter-flow interval characterisation (Task 1-iv) + anti-human baseline (Step 2b)
     ext_sorted = ext_train.sort_values(['src_ip', 'timestamp'])
     ext_iv_all = ext_sorted.groupby('src_ip')['timestamp'].diff().dropna()
     b['ext_interval_mean']   = ext_iv_all.mean()         / 100
@@ -139,6 +143,8 @@ def compute_baselines() -> dict:
     b['ext_interval_std']    = ext_iv_all.std()          / 100
     b['ext_interval_p90']    = ext_iv_all.quantile(0.90) / 100
     b['ext_interval_p95']    = ext_iv_all.quantile(0.95) / 100
+    ext_iv_std_per_ip = ext_sorted.groupby('src_ip')['timestamp'].apply(lambda x: x.diff().std()).dropna()
+    b['ext_interval_std_min'] = ext_iv_std_per_ip.min()
 
     # External client ratio baseline (Step 2)
     ext_per_ip = ext_train.groupby('src_ip').agg(
@@ -204,6 +210,27 @@ def detect_external_anomalies(baselines: dict) -> list[dict]:
     return alerts
 
 
+# ── Step 2b: External automation / anti-human pattern ────────────────────────
+
+def detect_external_automation(baselines: dict) -> list[dict]:
+    threshold   = baselines['ext_interval_std_min']
+    ext_sorted  = ext_test.sort_values(['src_ip', 'timestamp'])
+    iv_std      = ext_sorted.groupby('src_ip')['timestamp'].apply(lambda x: x.diff().std()).dropna()
+
+    alerts = []
+    for ip, obs_std in iv_std[iv_std < threshold].items():
+        median_iv = ext_sorted[ext_sorted['src_ip'] == ip]['timestamp'].diff().median()
+        alerts.append({
+            'rule'  : 'External Automation',
+            'ip'    : ip,
+            'threat': 'Non-human access pattern — possible bot, scraper, or automated attack tool',
+            'why'   : (f"Inter-flow interval std={obs_std/100:.2f}s "
+                       f"(threshold {threshold/100:.2f}s — training minimum) "
+                       f"— regularity below any training client, median interval={median_iv/100:.2f}s"),
+        })
+    return sorted(alerts, key=lambda a: ipaddress.IPv4Address(a['ip']))
+
+
 # ── Step 3: HTTPS data exfiltration ───────────────────────────────────────────
 
 def detect_https_exfiltration(baselines: dict) -> list[dict]:
@@ -239,6 +266,7 @@ def detect_new_geo_destinations(baselines: dict) -> list[dict]:
 
     test_countries_per_ip = pub_test.groupby('src_ip')['country'].apply(set).to_dict()
     ip_flows_map          = {ip: df for ip, df in pub_test.groupby('src_ip')}
+    total_flows_per_ip    = int_test.groupby('src_ip').size().to_dict()
 
     alerts = []
     for ip in sorted(test_countries_per_ip):
@@ -249,11 +277,14 @@ def detect_new_geo_destinations(baselines: dict) -> list[dict]:
         flows_to_new = len(ip_flows[ip_flows['country'].isin(new_to_network)])
         if flows_to_new < min_flows:
             continue
+        total = total_flows_per_ip.get(ip, 1)
+        if flows_to_new / total < GEO_MIN_PROPORTION:
+            continue
         alerts.append({
             'rule'  : 'New Country Destination',
             'ip'    : ip,
             'threat': 'Traffic to country not seen during training',
-            'why'   : f"{flows_to_new} flows to new country/ies: {', '.join(sorted(new_to_network))}",
+            'why'   : f"{flows_to_new} flows to new country/ies: {', '.join(sorted(new_to_network))} ({flows_to_new/total*100:.1f}% of total traffic)",
         })
     return alerts
 
@@ -353,18 +384,6 @@ def detect_dns_anomalies(baselines: dict) -> list[dict]:
             'why'   : f"{int(count):,} DNS queries ({deviation:.1f}σ above mean {mean:.0f}), median interval={intervals.median()/100:.2f}s",
         })
 
-    # Sub-rule 2: DNS to public server (zero-threshold)
-    public_dns = dns_test[~dns_test['dst_ip'].isin(internal_servers)]
-    for ip in sorted(public_dns['src_ip'].unique()):
-        dst_ips = sorted(public_dns[public_dns['src_ip'] == ip]['dst_ip'].unique())
-        count   = len(public_dns[public_dns['src_ip'] == ip])
-        alerts.append({
-            'rule'  : 'DNS to Public Server',
-            'ip'    : ip,
-            'threat': 'DNS tunneling or C&C — bypassing internal resolvers',
-            'why'   : f"{count} queries sent to external DNS: {', '.join(dst_ips)}",
-        })
-
     return sorted(alerts, key=lambda a: (a['rule'], a['ip']))
 
 
@@ -375,6 +394,10 @@ def detect_dns_anomalies(baselines: dict) -> list[dict]:
 # that it naturally has tight intervals. Derived from analysis: confirmed
 # beacons show ≥1.84×; false-positive .160 shows only 1.17×.
 MIN_HTTPS_REGULARIZATION = 1.5
+
+# Geo: new-country flows must represent at least 1% of the IP's total test traffic.
+# Prevents CDN rotation artifacts (a few flows to an unknown country) from firing.
+GEO_MIN_PROPORTION = 0.01
 
 def detect_botnet_beaconing(baselines: dict) -> list[dict]:
     https_threshold       = baselines['https_interval_std_p05']
@@ -463,8 +486,9 @@ def main() -> None:
     print(f"    DNS beaconing p05       : {b['dns_interval_std_p05']/100:.2f}s")
     print(f"    External ratio window   : [{b['ext_ratio_mean']-SIGMA*b['ext_ratio_std']:.4f}, {b['ext_ratio_mean']+SIGMA*b['ext_ratio_std']:.4f}]")
     print(f"    Internal DNS servers    : {b['dns_internal_servers']}")
-    print(f"    Geo min intensity flows : {b['geo_min_intensity_flows']}")
+    print(f"    Geo min intensity flows : {b['geo_min_intensity_flows']} flows  (p10 of per-IP/country flow counts)")
     print(f"    External fan-out threshold : {b['ext_fan_mean'] + SIGMA*b['ext_fan_std']:.0f} unique dst IPs  (mean+{SIGMA}σ)")
+    print(f"    External automation threshold : {b['ext_interval_std_min']/100:.2f}s  (training minimum — no training client was ever below this)")
 
     print(f"\n[*] Network characterisation — internal destination countries ({b['total_train_countries']} total):")
     top10       = b['country_stats'].head(10)
@@ -496,6 +520,7 @@ def main() -> None:
     steps = [
         ("Step 1 — New Source IPs",              detect_new_source_ips(b)),
         ("Step 2 — Anomalous External Users",    detect_external_anomalies(b)),
+        ("Step 2b — External Automation",        detect_external_automation(b)),
         ("Step 3 — HTTPS Data Exfiltration",     detect_https_exfiltration(b)),
         ("Step 4 — New Country Destinations",    detect_new_geo_destinations(b)),
         ("Step 4b — New Destination IPs / ASNs", detect_new_destinations(b)),

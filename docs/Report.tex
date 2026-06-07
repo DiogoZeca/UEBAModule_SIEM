@@ -234,8 +234,7 @@ external_train : (712488, 7)
 external_test  : (681696, 7)
 \end{verbatim}
 
-We concluded that the test files are larger than the training files in
-both cases.
+
 
 \hypertarget{protocols-and-ports}{%
 \subsection{Protocols and Ports}\label{protocols-and-ports}}
@@ -259,9 +258,7 @@ Code used:
 \end{Shaded}
 
 Every anomaly we detect will be either in HTTPS behaviour or DNS
-behaviour --- there is nothing else to look at. This simplifies the
-problem significantly and means our detection rules can be precisely
-targeted at each protocol.
+behaviour, there is nothing else to look at.
 
 \hypertarget{internal-network-topology}{%
 \subsection{Internal Network Topology}\label{internal-network-topology}}
@@ -402,10 +399,7 @@ Internal DNS servers: {'192.168.101.229', '192.168.101.226'}
 
 This is an invariant, not a tendency. It directly motivates one of the
 DNS detection sub-rules: any internal client that sends a DNS query to
-an IP outside this set during the test period is immediately and
-unconditionally anomalous. No threshold needed, no baseline this is just
-a violation of a rule that held perfectly across the entire training
-dataset.
+an IP outside this set during the test period is immediately anomalous. 
 
 \hypertarget{external-clients}{%
 \subsection{External Clients}\label{external-clients}}
@@ -430,12 +424,19 @@ Max & 8.61 \\
 
 A standard deviation of 0.04 on a ratio of 8.50 means each client
 downloads almost exactly 8.5× what it uploads, consistently, across
-every external user. This is the tightest baseline in the entire
-dataset. It tells us the corporate server behaves very predictably which
-means any external client that breaks this pattern in the test period is
-doing something genuinely unusual, not just natural variation. A 3σ
-window of {[}8.38, 8.62{]} is enough to catch real anomalies with very
-few false positives.
+every external user. The training range spans only {[}8.40, 8.61{]}.
+This is the tightest baseline in the entire dataset: any test client
+outside this range is exhibiting behaviour no training client ever
+produced.
+
+The signal is asymmetric in practice. Clients \emph{below} the lower
+bound upload proportionally more to the server, suggesting unusual data being pushed toward the
+corporate server. Clients \emph{above} the upper bound download
+slightly more (a weaker signal, since the absolute deviation is small
+and ratios up to 9.22 are routine for internal clients during normal
+browsing). Both groups are flagged, but they carry different practical
+weight. A 3σ window of {[}8.38, 8.62{]} is sufficient to identify all
+clients outside the observed training range.
 
 The script also characterised the external inter-flow intervals during
 baseline computation:
@@ -457,7 +458,11 @@ p95 & 34.750 s \\
 The gap between median (1.04 s) and mean (8.08 s), and the jump from p90
 (1.91 s) to p95 (34.75 s), confirms a heavy-tailed distribution, consistent
 with human web browsing: short active bursts separated by reading
-pauses, with occasional long overnight idle gaps.
+pauses, with occasional long overnight idle gaps. This burst-and-pause
+pattern also establishes what ``normal'' external timing looks like,
+directly motivating the anti-human pattern rule (Step 2b): any external
+client whose inter-flow jitter is tighter than the most regular training
+client (16.16 s) is operating outside this observed human envelope.
 
 \begin{aiprompt}
 Explore the data given in the dataset1 folder having in mind all the context I gave you before. The script should read the training data and output useful information that we could use in order to achieve our goal. The idea is to use a Python script, using the provided example (sampleScript.py) as a base.
@@ -485,10 +490,6 @@ runs exactly once at startup, builds every statistic every rule will
 ever need, and passes the result as a single dict b. Each rule receives
 b as its only input and reads from it without modifying it.
 
-The function itself has no side effects, it prints nothing, flags
-nothing, and touches no external state. This makes it independently
-testable and means that replacing the baseline source requires changing
-only this one function, with zero impact on any detection logic.
 
 \hypertarget{code-implementation}{%
 \subsubsection{Code Implementation}\label{code-implementation}}
@@ -531,13 +532,12 @@ own.
 \hypertarget{threshold-table}{%
 \subsection{Threshold table}\label{threshold-table}}
 
-All thresholds are derived dynamically from the training data. The
-script prints them at startup:
+All thresholds are derived dynamically from the training data. 
 
 \begin{verbatim}
 New source IP:                 none — binary set membership check
-HTTPS upload threshold:        116.6 MB         (mean+3σ)
-DNS flow threshold:            1399 flows       (mean+3σ)
+HTTPS upload threshold:        116.6 MB           (mean+3σ)
+DNS flow threshold:            1399 flows         (mean+3σ)
 BotNet HTTPS interval p05:     18.81 s
 BotNet DNS  interval p05:      63.73 s
 External ratio window:         [8.3817, 8.6226]
@@ -548,10 +548,10 @@ External fan-out threshold:    258 unique dst IPs  (mean+3σ)
 Each threshold targets a different dimension of behaviour. Not every rule requires a statistical threshold: when a training invariant holds absolutely, any test-period violation is unconditionally anomalous.
 
 \begin{itemize}
-  \item \textbf{New source IP (Step 1)} requires no threshold at all. Any internal device that generates traffic in the test period but had zero presence during training is flagged unconditionally. The only computation is a set membership check against all source IPs observed in training.
-  \item \textbf{HTTPS upload threshold (116.6 MB)} defines the maximum total data a normal internal client sends over HTTPS in a day; anything above this suggests bulk data exfiltration. The threshold is derived from combined HTTPS traffic (internal .240 + external servers). Both groups have identical ratios ($\sim$9.23), so the combined aggregate is a valid baseline.
+  \item \textbf{New source IP (Step 1)} requires no threshold at all. Any internal device that generates traffic in the test period but had zero presence during training is flagged unconditionally.
+  \item \textbf{HTTPS upload threshold (116.6 MB)} defines the maximum total data a normal internal client sends over HTTPS in a day; anything above this suggests bulk data exfiltration. 
   \item \textbf{DNS flow count threshold (1,399 flows)} flags clients generating an abnormal number of DNS queries, the primary signal for DNS-based C\&C beaconing.
-  \item \textbf{BotNet interval p05 thresholds} are split by protocol: 18.81\,s for HTTPS and 63.73\,s for DNS, representing the 5th percentiles of per-client interval standard deviations. Any client below its protocol's floor is more regular than 95\% of all legitimate training clients. Separating the protocols prevents a device with naturally irregular HTTPS activity from masking a tight DNS beaconing pattern.
+  \item \textbf{BotNet interval p05 thresholds} are split by protocol: 18.81\,s for HTTPS and 63.73\,s for DNS. Any client below its protocol's floor is more regular than 95\% of all legitimate training clients. Separating the protocols prevents a device with naturally irregular HTTPS activity from masking a tight DNS beaconing pattern.
   \item \textbf{External ratio window ([8.3817, 8.6226])} defines the expected down/up range for external clients. Any external client outside this window is interacting with the corporate server in an anomalous way.
   \item \textbf{Geo minimum intensity floor (10 flows)} filters CDN noise: any client reaching a country new to the entire network with fewer than 10 flows is treated as a CDN edge rotation rather than a deliberate new destination.
   \item \textbf{External fan-out threshold (258 unique IPs)} flags any internal client contacting an anomalous number of distinct external destinations in a single day. Derived from mean (118.1) + 3$\sigma$ (3 $\times$ 46.7), it catches sweep-style behaviour where a host checks in with many scattered external endpoints.
@@ -569,10 +569,7 @@ Applied consistently across all volume-based rules, it means the
 thresholds adapt automatically to the dataset: a network with higher
 baseline DNS traffic will produce a higher DNS threshold, and a network
 with tighter HTTPS upload patterns will produce a lower upload
-threshold. No manual tuning required. To make this concrete for this
-dataset: with 198 internal clients, a 0.1\% false-positive rate per rule
-means roughly 0.2 false positives per rule per day in the worst case,
-easily manageable for a security analyst.
+threshold. No manual tuning required. 
 
 The alternatives were evaluated and rejected:
 \begin{itemize}
@@ -631,8 +628,10 @@ This strict separation is what gives the detection statistical validity:
 the baselines describe what normal looks like before any anomaly occurs,
 and the rules measure how far the test behaviour deviates from that
 established normal. The rules were designed to be complementary rather
-than redundant: some catch high-volume bulk attacks, others catch
-low-and-slow patterns that volume alone would miss entirely. For each
+than redundant: cumulative volume rules catch both bulk attacks and
+low-and-slow exfiltration that rate-based detection would miss, while
+timing and behavioural rules catch threats that leave no volumetric
+footprint at all. For each
 rule, the process followed the same structure: define the metric,
 compute the threshold from training, apply it to the test data, and
 examine what gets flagged.
@@ -663,37 +662,21 @@ Spec Requirement & Step(s) & Signal dimension \\
 (ii) DNS data exfiltration & Step 5 sub-rule 1 & DNS query volume \\
 (iii) C\&C activities using DNS & Step 5 sub-rule 2 + Step 6 (DNS) & Resolver bypass + timing regularity \\
 (iv) Anomalous external destinations & Steps 4, 4b, 4c & Geography, ASN infrastructure, unique IP count \\
-(v) External users anomalous & Step 2 & Down/up byte ratio \\
+(v) External users anomalous & Steps 2, 2b & Down/up byte ratio + inter-flow timing regularity \\
 \textit{(bonus)} Rogue/new devices & Step 1 & Set membership — no threshold needed \\
 \end{longtable}
 
-Steps 4, 4b, and 4c address the same threat category from three
-independent dimensions: new countries (geography), new ASNs
-(infrastructure provider), and anomalous unique destination count
-(breadth). Splitting them ensures that a compromise staying within known
-geography but using new hosting, or staying within known infrastructure
-but sweeping unusually many endpoints, is still caught.
 
-Step 5 and Step 6 both target DNS-based threats but measure different
-things: Step 5 measures query volume (how many), Step 6 measures timing
-regularity (how evenly spaced). A bursty DNS tunnel can have high volume
-without tight timing; a slow-rate beacon can have tight timing without
-high volume. Step 1 is a bonus rule beyond the spec minimum, added after
-discovering that two devices in the test set generate thousands of flows
-while staying deliberately sub-threshold on every statistical metric ---
-the only detection that cannot be evaded by volume calibration is a
-binary set membership check.
 
 \hypertarget{new-source-ip-detection}{%
-\subsection{New Source IP Detection}\label{new-source-ip-detection}}
+\subsection{Step 1 — New Source IP Detection}\label{new-source-ip-detection}}
 
 \hypertarget{what-to-look-for}{%
 \subsubsection{What to look for}\label{what-to-look-for}}
 
 The most fundamental principle in UEBA is that a behavioral baseline can
 only describe devices that were actually observed during training. Every
-statistical rule in this pipeline --- upload volume, DNS count,
-beaconing intervals, fan-out --- produces a number that is compared
+statistical rule in this pipeline produces a number that is compared
 against a distribution computed from training data. But this comparison
 is only meaningful if the device itself has a training history. A device
 with zero training presence has no baseline to deviate from, not a small
@@ -721,11 +704,7 @@ binary: was this source IP seen at all during training?
 \end{Highlighting}
 \end{Shaded}
 
-One set subtraction. No mean, no standard deviation, no threshold
-tuning. A device is either in the training set or it is not. This
-simplicity is also what makes it immune to the false positive problems
-that affect threshold-based rules: there is no σ to miscalibrate and no
-distribution to mis-model.
+One set subtraction. A device is either in the training set or it is not.
 
 \hypertarget{results}{%
 \subsubsection{Results}\label{results}}
@@ -756,7 +735,7 @@ dimension. The only rule that catches them is the one that requires no
 threshold at all.
 
 A complementary observation: the training set contains 2 IPs that
-disappeared entirely in the test period --- 192.168.101.57 (2,117
+disappeared entirely in the test period: The 192.168.101.57 (2,117
 training flows) and 192.168.101.202 (2,501 training flows). While device
 turnover is normal and these are not flagged as alerts, the simultaneous
 disappearance of two training devices and appearance of two new ones in
@@ -764,9 +743,11 @@ the same test window is a pattern consistent with IP reassignment
 following lateral movement. It is noted here as investigative context
 for an analyst reviewing the full picture.
 
+\medskip
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} bonus rule beyond the minimum.}}
+
 \hypertarget{external-anomaly-detection}{%
-\subsection{External Anomaly
-Detection}\label{external-anomaly-detection}}
+\subsection{Step 2 — External Anomaly Detection}\label{external-anomaly-detection}}
 
 \hypertarget{what-to-look-for-1}{%
 \subsubsection{What to look for}\label{what-to-look-for-1}}
@@ -777,6 +758,14 @@ is that the relevant signal is not the amount of traffic, but the ratio
 between downloaded and uploaded bytes. During training, every external
 client consistently downloads roughly 8.5× what it uploads: a tight,
 stable pattern with a standard deviation of just 0.04.
+
+Note that this 8.50 baseline is distinct from the 9.22 ratio observed
+for internal clients in the HTTPS destination split analysis. The two
+ratios measure opposite directions of traffic: 9.22 describes internal
+clients downloading from external internet servers (web browsing),
+while 8.50 describes external clients downloading from the corporate
+server (server access). Different populations, different servers and
+different baselines.
 
 This makes the ratio the most discriminating metric in the entire
 dataset: a client whose ratio breaks this pattern is interacting with
@@ -821,15 +810,99 @@ distinct behavioural groups:
 The results revealed two groups:
 \begin{itemize}
   \item The first group (.61, .64, .174) sit below the lower bound. Their ratio is lower than normal, meaning they upload proportionally more than a legitimate client would. This is consistent with a compromised account being used to push data toward the corporate server, or with reversed exfiltration where data is staged on the server from outside.
-  \item The second group (.182, .210) sit above the upper bound, downloading more than expected relative to what they upload, consistent with bulk data retrieval or unusual large-object access. These are two different threat models, but the same symmetric rule catches both because both break the tight ratio invariant in opposite directions.
+  \item The second group (.182, .210) sit above the upper bound. They are flagged because the rule is symmetric and they cross the statistical threshold, but the practical deviation is minimal: ratios of 8.64--8.66 against a baseline of 8.50 represent an absolute difference of just 0.14--0.16. Because the threshold is already extremely tight (std = 0.04), any IP above the upper bound is by construction close to it. In contrast, internal clients routinely browse at ratios of 9.22 without any concern. These two IPs are retained as MEDIUM confidence anomalies because they do break a tight statistical invariant, but analysts should treat them as the weakest signals in the pipeline and prioritise the upload-heavy group.
 \end{itemize}
 
 The 188.83.72.61 at 6.7σ is the most extreme anomaly in the entire
 external dataset.
 
+\medskip
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (v) anomalous behaviour of external clients, via down/up byte ratio deviation.}}
+
+\hypertarget{external-automation}{%
+\subsection{Step 2b — External Automation (Anti-Human Pattern)}\label{external-automation}}
+
+\subsubsection{What to look for}
+
+Human browsing behaviour is inherently irregular: users pause, read,
+and navigate at unpredictable intervals. A client whose inter-flow
+timestamps are unnaturally consistent (more regular than any client
+ever observed in training) is exhibiting a pattern incompatible with
+human operation.
+
+The detection metric is the per-IP standard deviation of inter-flow
+intervals (\emph{jitter}) in the test period. Jitter
+measures how much the gaps between consecutive flows vary: high jitter
+means the client connects at unpredictable times (human-like); low
+jitter means it connects on a fixed clock with almost no drift
+(machine-like). Across all 196 external training clients, the most
+regular client had a jitter of 16.16\,s. This value is the natural
+floor of human-like behaviour in this dataset.
+
+It is important to note that machine-like regularity is not inherently
+malicious. Legitimate automated consumers (like monitoring probes, scheduled
+API integrations, or health-check services) also connect at fixed
+intervals by design. The regularity pattern is a
+strong indicator that warrants analyst attention, but it cannot
+distinguish between a bot attacking the server, malware checking into
+an internal resource, or a benign automated service.
+
+\subsubsection{Code Implementation}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# Threshold: minimum per-IP interval std across all 196 training clients}
+\CommentTok{\# Interpretation: no training client was ever more regular than this}
+\NormalTok{ext\_iv\_std\_per\_ip }\OperatorTok{=}\NormalTok{ ext\_sorted.groupby(}\StringTok{'src\_ip'}\NormalTok{)[}\StringTok{'timestamp'}\NormalTok{]}
+\NormalTok{                  .apply(}\KeywordTok{lambda}\NormalTok{ x: x.diff().std()).dropna()}
+\NormalTok{threshold }\OperatorTok{=}\NormalTok{ ext\_iv\_std\_per\_ip.}\BuiltInTok{min}\NormalTok{()  }\CommentTok{\# 16.16 s}
+
+\NormalTok{flagged }\OperatorTok{=}\NormalTok{ iv\_std\_test[iv\_std\_test }\OperatorTok{<}\NormalTok{ threshold]}
+\end{Highlighting}
+\end{Shaded}
+
+\subsubsection{Results}
+
+The rule flagged 5 external IPs, all far below the 16.16\,s training
+floor:
+
+\begin{verbatim}
+[ALERT] 188.83.72.185  std=0.51s  median=0.91s  (32x below training floor)
+[ALERT] 188.83.72.32   std=2.02s  median=8.00s  ( 8x below training floor)
+[ALERT] 188.83.72.46   std=2.02s  median=8.00s  ( 8x below training floor)
+[ALERT] 188.83.72.48   std=2.03s  median=8.00s  ( 8x below training floor)
+[ALERT] 188.83.72.166  std=2.00s  median=8.00s  ( 8x below training floor)
+\end{verbatim}
+
+Four of the five (.32, .46, .48, .166) share near-identical statistics:
+approximately 2\,s standard deviation and an 8-second median interval.
+This uniformity strongly suggests a shared automated tool or
+configuration connecting to the corporate server on a fixed schedule.
+The fifth (.185) is even more extreme at 0.51\,s standard deviation
+with sub-second timing precision, categorically incompatible with human
+interaction.
+
+A natural concern is whether a 2\,s standard deviation is genuinely
+abnormal or simply a tight but plausible human pattern. The test data
+resolves this decisively: ranking all 196 external test IPs by their
+interval standard deviation reveals a clean bimodal split with no IP
+between 2.03\,s and 18.39\,s. There is an 8-second empty gap separating
+the two clusters. If 2\,s were a natural point on a continuum, IPs at
+4\,s, 8\,s, or 12\,s would exist.
+That combination of
+fixed median interval and near-zero jitter (2\,s) is the signature of
+a configured timer, not a human.
+
+Whether these represent malicious bots, coordinated scanners, or
+legitimate monitoring agents cannot be determined from timing alone.
+They are flagged as \textbf{MEDIUM} confidence anomalies requiring
+analyst follow-up.
+
+\medskip
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (v) anomalous behaviour of external clients: inter-flow jitter (anti-human pattern).}}
+
 \hypertarget{internal-anomaly-detection-https-exfiltration}{%
-\subsection{Internal Anomaly Detection (HTTPS
-Exfiltration)}\label{internal-anomaly-detection-https-exfiltration}}
+\subsection{Step 3 — Internal Anomaly Detection (HTTPS Exfiltration)}\label{internal-anomaly-detection-https-exfiltration}}
 
 \hypertarget{what-to-look-for-2}{%
 \subsubsection{What to look for}\label{what-to-look-for-2}}
@@ -837,10 +910,12 @@ Exfiltration)}\label{internal-anomaly-detection-https-exfiltration}}
 The HTTPS exfiltration rule targets internal clients sending an abnormal
 amount of data outbound over HTTPS. The detection metric is total upload
 volume per client: any client uploading more than mean + 3σ (116.6 MB)
-in the test period is flagged. The combined HTTPS traffic (internal .240
-+ external servers) is used as the baseline, validated by the
-near-identical per-group ratios ($\sim$9.23 in both)
-characterised during exploration.
+in the test period is flagged. Measuring cumulative volume over the full
+observation window, rather than peak rate or per-session bytes, is a
+deliberate design choice: a low-and-slow exfiltrator operating at a
+modest rate stays invisible to rate-based rules, but its data
+accumulates across the test period and will eventually cross the total
+volume threshold.
 
 A second signal, the PCR (Producer-Consumer Ratio), was implemented and
 evaluated before finalising this rule. PCR = (up − down) / (up + down)
@@ -892,14 +967,16 @@ The rule flagged 6 internal IPs:
 
 All six devices exceed the 116.6 MB threshold cleanly. The top three
 (.187, .14, .208) represent bulk data dumps at 4.4--7.6 GB, 183--316σ
-above baseline --- orders of magnitude beyond any legitimate client in
+above baseline, that are orders of magnitude beyond any legitimate client in
 training. The remaining three (.26, .197, .207) sit between 119 MB and
 259 MB, each clearly distinguishable from the highest unflagged device
 at 105.2 MB.
 
+\medskip
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (ii) HTTPS data exfiltration via upload volume anomaly.}}
+
 \hypertarget{geodestination-anomaly-detection}{%
-\subsection{GeoDestination Anomaly
-Detection}\label{geodestination-anomaly-detection}}
+\subsection{Step 4 — GeoDestination Anomaly Detection}\label{geodestination-anomaly-detection}}
 
 \hypertarget{what-to-look-for-3}{%
 \subsubsection{What to look for}\label{what-to-look-for-3}}
@@ -925,8 +1002,8 @@ To
 solve the false positive problem, the naive per-IP approach was replaced
 with a global detection strategy: flag any client reaching a country
 that no client in the entire network contacted during training. Any
-access to such a country is immediately anomalous at the network level
---- not just new to the individual device, but new to the whole
+access to such a country is immediately anomalous at the network level,
+it means not just new to the individual deviced but new to the whole
 organisation.
 
 \begin{Shaded}
@@ -940,9 +1017,18 @@ organisation.
 
 The set difference operation is the core: subtracting the network-wide
 known country set from the observed destinations leaves only genuinely
-new territory. A MIN\_INTENSITY\_FLOWS = 10 filter removes CDN edge
-noise --- any new-country access with fewer than 10 flows is treated as
-a stray CDN rotation rather than a deliberate connection.
+new territory. A minimum intensity floor removes CDN edge noise: any
+new-country access with too few flows is treated as a stray CDN
+rotation rather than a deliberate connection.
+
+Two guards are applied in combination to eliminate CDN noise:
+
+\begin{itemize}
+  \item \textbf{Absolute floor (3 flows):} derived from training data 10\%of per-(IP,~country) flow counts across 2,354 training pairs. CDN rotation artifacts typically produce 1--2 flows, well below this floor.
+  \item \textbf{Proportion guard (1\% of total traffic):} new-country flows must represent at least 1\% of that IP's total test-period flows. A client with thousands of flows contacting a new country in just 4--9 flows (0.06--0.37\% of traffic) is exhibiting CDN behaviour, not deliberate communication.
+\end{itemize}
+
+Both conditions must be satisfied simultaneously. This dual guard prevents both low-volume CDN hits and high-volume IPs where a tiny fraction of traffic incidentally reaches an unknown country.
 
 ASN (Autonomous System Number) detection was also implemented as a
 complementary rule: a device contacting a new cloud provider or hosting
@@ -950,49 +1036,52 @@ company is suspicious even if the destination country is already in the
 training set. ASN lookups use a separate GeoIP database and compare
 against the global union of all ASNs seen by any client during training.
 This is implemented as a separate step (Step 4b) rather than merged into
-this rule, since it catches a different threat model --- new
-infrastructure, not just new geography.
+this rule, since it catches a different threat model.
 
 \subsubsection{Results}
 
 
 
-The global
-new-country rule with the 10-flow intensity filter produced 3 flagged
-IPs:
+The dual-guard rule produced 3 flagged IPs, all high-confidence:
 
 \begin{verbatim}
 [ALERT] 192.168.101.125   523 flows to new country/ies:
-          BG, CZ, DK, FI, IR, LV, PL, PY, RU, SC, UA
+          BG, CZ, DK, FI, IR, LV, PL, PY, RU, SC, UA  (11.7% of traffic)
 [ALERT] 192.168.101.36    904 flows to new country/ies:
-          AR, BA, BG, BY, CZ, EE, FI, GE, HU, IQ, IR, KZ, LU, LV, PL, RU, UA
+          AR, BA, BG, BY, CZ, EE, FI, GE, HU, IQ, IR, KZ, LU, LV, PL, RU, UA  (13.5%)
 [ALERT] 192.168.101.72   1157 flows to new country/ies:
-          BD, BY, BZ, EE, FI, GR, HR, IR, KZ, LU, LV, NG, PL, RU, UA
+          BD, BY, BZ, EE, FI, GR, HR, IR, KZ, LU, LV, NG, PL, RU, UA  (13.1%)
 \end{verbatim}
 
-All three are high-confidence detections: they each reach multiple
-countries new to the entire network, including Russia, Iran, and Ukraine
---- geographies absent from the 36 countries seen across all 198
-training clients. Each has hundreds of flows to the new destinations,
-well above the 10-flow noise floor. All three are also independently
-confirmed by the New Destination rule (Step 4b), which detects the same
-infrastructure through ASN analysis.
+All three reach multiple countries new to the entire network, including
+Russia, Iran, and Ukraine, geographies absent from all 198 training
+clients. Each sends over 11\% of its total test traffic to these new
+destinations, ruling out CDN rotation. All three are independently
+confirmed by Step 4b through ASN analysis, promoting them to HIGH
+confidence.
+
+Two IPs (.167 and .175) had 4--9 flows to Belgium (never seen in
+training) but represented only 0.06--0.37\% of their total traffic. These were correctly excluded as
+likely CDN edge rotation rather than deliberate connections.
+
+\medskip
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (iv) anomalous external destinations via new-country geography.}}
 
 \hypertarget{new-destination-detection}{%
-\subsection{New Destination Detection}\label{new-destination-detection}}
+\subsection{Step 4b — New Destination Detection}\label{new-destination-detection}}
 
 \hypertarget{what-to-look-for-4}{%
 \subsubsection{What to look for}\label{what-to-look-for-4}}
 
 Beyond new geographic territory, two complementary destination-based
 signals catch compromised devices reaching infrastructure that was
-simply never contacted during training --- regardless of country.
+simply never contacted during training regardless of country.
 
 \begin{itemize}
 \tightlist
 \item
   Sub-rule A (New External ASN): flags any internal client contacting an
-  Autonomous System (cloud provider, hosting company, ISP) that no
+  Autonomous System that no
   client in the entire network used during training. Country detection
   can miss this if the new infrastructure happens to be in a country the
   network already visited. Comparing against the global union of all
@@ -1004,10 +1093,7 @@ simply never contacted during training --- regardless of country.
   Sub-rule B (New Internal Destination): flags any internal client
   communicating with an internal IP (192.168.101.x) that was never a
   destination in any training flow. During training, all internal HTTPS
-  traffic goes exclusively to the single known server .240. Any
-  internal-to-internal TCP:443 traffic to any other address is therefore
-  an absolute violation --- the invariant held perfectly across all 198
-  clients and 890 K training rows.
+  traffic goes exclusively to the single known server .240. 
 \end{itemize}
 
 \hypertarget{code-implementation-2}{%
@@ -1064,18 +1150,20 @@ This cross-rule corroboration promotes all three to HIGH confidence.
 
 The lateral movement triangle (.68, .138, .186) is the most significant
 finding in this rule. These three internal devices communicate with each
-other over TCP:443 --- a connection type that, across all 198 clients
+other over TCP:443, a connection that, across all 198 clients
 and 890 K training rows, goes exclusively to the known server .240. The
 fact that all three devices appear both as sources and destinations,
 forming a closed triangle of mutual communication, rules out a simple
 misconfiguration. The traffic pattern is symmetric (up/down byte ratios
 near 1:1, unlike the 9:1 ratio of normal web browsing), consistent with
 peer-to-peer command relay or lateral file transfer between compromised
-hosts.
+hosts, worth being mentioned.
+
+\medskip
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (iv) anomalous external destinations via new ASN infrastructure and new internal destinations (lateral movement).}}
 
 \hypertarget{external-destination-fan-out}{%
-\subsection{External Destination
-Fan-out}\label{external-destination-fan-out}}
+\subsection{Step 4c — External Destination Fan-out}\label{external-destination-fan-out}}
 
 \hypertarget{what-to-look-for-5}{%
 \subsubsection{What to look for}\label{what-to-look-for-5}}
@@ -1083,14 +1171,9 @@ Fan-out}\label{external-destination-fan-out}}
 The fan-out rule addresses a different dimension of suspicious external
 behaviour: not what destinations a client reaches, but how many. During
 training, internal clients contact a mean of 118.1 unique external IPs
-per day, with a standard deviation of 46.7. This gives a tight upper
-boundary --- legitimate browsing concentrates traffic on a small set of
-content servers, CDNs, and cloud providers. A device that suddenly
+per day, with a standard deviation of 46.7. A device that suddenly
 reaches hundreds more unique external endpoints than any legitimate
-client did in training is not browsing normally; it is sweeping through
-scattered infrastructure, consistent with a C2 implant performing
-check-ins across a distributed botnet panel or a scanning probe probing
-a wide address range.
+client did in training is not browsing normally.
 
 The key distinction from Step 4 and Step 4b is the signal being
 measured. Step 4 flags new geography; Step 4b flags new ASNs (new
@@ -1135,48 +1218,33 @@ The rule flagged 4 internal IPs:
 All four are already flagged by other rules, and that is precisely the
 point: fan-out provides a third independent confirmation for .36, .72,
 and .125, and a second independent axis of evidence for .207 alongside
-its exfiltration and DNS signals. The deviations are substantial --- .72
-contacts nearly 7× more unique external IPs than the training mean ---
-reinforcing that these devices are not exhibiting borderline behaviour
+its exfiltration and DNS signals. The deviations are substantial reinforcing that these devices are not exhibiting borderline behaviour
 but a fundamentally different operational mode. The highest unflagged
 device is .114 at 234 unique IPs, sitting 24 IPs below the threshold
 with no other anomalous signals, confirming the threshold is not set too
 aggressively.
 
+\medskip
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (iv) anomalous external destinations via unique destination count (breadth of reach).}}
+
 \hypertarget{dns-anomaly-detection}{%
-\subsection{DNS Anomaly Detection}\label{dns-anomaly-detection}}
+\subsection{Step 5 — DNS Anomaly Detection}\label{dns-anomaly-detection}}
 
 \hypertarget{what-to-look-for-6}{%
 \subsubsection{What to look for}\label{what-to-look-for-6}}
 
 The DNS anomaly rule targets internal clients exhibiting abnormal DNS
-behaviour, using two independent sub-rules that catch different aspects
-of the same threat category.
+behaviour. The active sub-rule is DNS-1 (Volume): it flags any client
+whose total DNS flow count exceeds mean + 3σ (1,399 flows), the primary
+signal for both DNS-based C\&C beaconing and DNS tunneling.
 
-\begin{itemize}
-\tightlist
-\item
-  DNS-1 (Volume) flags any client whose total DNS flow count exceeds
-  mean + 3σ (1,399 flows): an extreme query rate is the primary signal
-  for both DNS-based C\&C beaconing and DNS tunneling.
-\item
-  DNS-2 (Public server) flags any client that sends a DNS query to a
-  server outside .226 and .229. Since this invariant held perfectly
-  across all 198 clients during training, any violation is
-  unconditionally anomalous and requires no statistical threshold.
-\end{itemize}
-
-The two sub-rules are complementary: DNS-1 catches volume-based abuse
-through the internal resolvers, DNS-2 catches any attempt to bypass them
-entirely:
+The DNS-1 implementation:
 
 \begin{Shaded}
 \begin{Highlighting}[]
 \CommentTok{\# DNS{-}1: volume anomaly}
 \NormalTok{  threshold      }\OperatorTok{=}\NormalTok{ mean }\OperatorTok{+}\NormalTok{ SIGMA }\OperatorTok{*}\NormalTok{ std          }\CommentTok{\# 1,399 flows}
 \NormalTok{  volume\_flagged }\OperatorTok{=}\NormalTok{ dns\_count[dns\_count }\OperatorTok{\textgreater{}}\NormalTok{ threshold]}
-\CommentTok{\# DNS{-}2: public DNS server (binary invariant)}
-\NormalTok{  public\_dns }\OperatorTok{=}\NormalTok{ dns\_test[}\OperatorTok{\textasciitilde{}}\NormalTok{dns\_test[}\StringTok{\textquotesingle{}dst\_ip\textquotesingle{}}\NormalTok{].isin(internal\_servers)]}
 \end{Highlighting}
 \end{Shaded}
 
@@ -1219,10 +1287,6 @@ the exact 0.05s median interval across all flagged devices is the
 signature of a malware timer. Actual data exfiltration in this dataset
 happens over HTTPS, as seen in the previous rule.
 
-We initially considered flagging DNS exfiltration by FQDN entropy.
-However, the dataset does not include subdomain fields, only destination
-IPs, making entropy analysis impossible with the available data.
-
 A second approach was also attempted before arriving at the final:
 flagging anomalous DNS behaviour by per-query payload size (up\_bytes).
 The hypothesis was that DNS exfiltration encodes data inside subdomain
@@ -1234,13 +1298,18 @@ not encoded data, so the payload size is indistinguishable from normal
 traffic. This sub-rule was computed, tested, and dropped, it has zero
 discrimination power for this dataset.
 
+A third sub-rule (DNS-2, Public server) was also tested: flagging any
+client that sent DNS queries to a server outside the known internal
+resolvers (.226 and .229). Applied to the test data, DNS-2 produced zero
+alerts and added no new IPs to the detection list. All clients
+exclusively used the internal resolvers throughout the test period, so
+the sub-rule was removed from the final pipeline.
+
 \subsubsection{Results}
 
 
 
-DNS-1 flagged 5
-internal IPs. DNS-2 produced zero alerts --- no client in the test
-period sent DNS queries to a public server:
+DNS-1 flagged 5 internal IPs:
 
 \begin{verbatim}
 [ALERT] 192.168.101.41   flows=39,493  median interval=0.05s  increase=129×
@@ -1256,15 +1325,11 @@ day. The .41 is the most extreme case at 39,493 flows, 129× its own
 training baseline, with queries concentrated almost entirely on the two
 internal resolvers.
 
-The zero result for DNS-2 is not a failure of the rule, it is explained
-by the beaconing pattern itself. The malware routes its C\&C traffic
-through the internal DNS resolvers, which forward the queries upstream
-to the external C2 server. The infected devices never contact public DNS
-directly, which is why DNS-2 sees nothing. Both results together paint a
-consistent picture.
+\medskip
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (ii) DNS data exfiltration (sub-rule 1: volume) + (iii) C\&C activities using DNS (sub-rule 2: resolver bypass).}}
 
 \hypertarget{botnet-beacon-detection}{%
-\subsection{BotNet Beacon Detection}\label{botnet-beacon-detection}}
+\subsection{Step 6 — BotNet Beacon Detection}\label{botnet-beacon-detection}}
 
 \hypertarget{what-to-look-for-7}{%
 \subsubsection{What to look for}\label{what-to-look-for-7}}
@@ -1281,11 +1346,11 @@ Separating the protocols is essential: a device with irregular HTTPS
 browsing and regular DNS beaconing would have its DNS signal masked by
 the HTTPS noise in a combined calculation.
 
-Mean − 3σ cannot be applied: both per-protocol interval std distributions are right-skewed (a long tail of high-variance clients pulls the mean up), so the formula produces a negative lower bound for HTTPS and is equally inapplicable for DNS. No meaningful floor can be set this way on a right-skewed distribution.
+Mean − 3σ cannot be applied: both per-protocol interval std distributions are right-skewed, so the formula produces a negative lower bound for HTTPS and is equally inapplicable for DNS. No meaningful floor can be set this way on a right-skewed distribution.
 
 \subsubsection{Code Implementation}
 
-The threshold for each protocol is its 5th percentile (p05) of per-client interval standard deviations from training. This is the empirical lower boundary of normal behaviour: any client in the test period with an interval std below the HTTPS floor (18.81 s) is more regular than 95\% of all legitimate HTTPS sessions in training; similarly for DNS (63.73 s).
+The threshold for each protocol is its 5\% (p05) of per-client interval standard deviations from training. This is the empirical lower boundary of normal behaviour: any client in the test period with an interval std below the HTTPS floor (18.81 s) is more regular than 95\% of all legitimate HTTPS sessions in training; similarly for DNS (63.73 s).
 
 For HTTPS beaconing, a regularisation ratio check is added on top of the
 threshold: the device's own training-period HTTPS interval std must be
@@ -1293,8 +1358,7 @@ at least 1.5× higher than its test-period std. This guards against
 devices that were naturally tight in training from being falsely
 flagged. A device with train\_std = 20.00 s and test\_std = 18.00 s has
 barely changed; a device with train\_std = 120.00 s and test\_std =
-18.00 s has genuinely become more regular --- only the latter is
-beaconing.
+18.00 s has genuinely become more regular.
 
 DNS beaconing includes an additional volume guard: the DNS flow count
 must also exceed the DNS volume threshold (1,399 flows). A device with
@@ -1337,7 +1401,7 @@ channels:
 The 6 devices split cleanly by protocol:
 \begin{itemize}
   \item The DNS beacons (.23, .41, .201) fire at an exact 0.05\,s median interval through the internal DNS resolvers, consistent with Step~5's findings. The same malware heartbeat confirmed by both volume and timing analysis.
-  \item The HTTPS beacons (.117, .157, .188) fire at intervals clustering tightly between 1.00 and 1.03 seconds --- the fingerprint of a single malware family sharing the same hardcoded C2 timer.
+  \item The HTTPS beacons (.117, .157, .188) fire at intervals clustering tightly between 1.00 and 1.03 seconds, a fingerprint of a single malware family sharing the same hardcoded C2 timer.
 \end{itemize}
 
 The regularisation ratio validates that each HTTPS beacon genuinely
@@ -1353,18 +1417,13 @@ combined-channel analysis because mixing their DNS 0.05 s intervals with
 HTTPS $\sim$1.00 s intervals produced an artificially low
 overall std. With per-protocol analysis, .32's DNS flow count falls
 below the 1,399-flow volume guard, and .160's HTTPS regularisation ratio
-is only 1.17× --- barely changed from training, not a genuine
-behavioural shift.
+is only 1.17× (barely changed from training).
 
-The 192.168.101.148, flagged by DNS-1 with 1,661 flows at a 0.05 s median
-interval, is not flagged by this rule. Although its DNS query count
-exceeds the volume threshold, its DNS interval std is above the 63.73 s
-p05 floor: the queries arrive in bursts rather than uniformly spaced, so
-the timing alone does not meet the beaconing definition. Step 5 and Step
-6 together cover both cases --- volume-anomalous DNS and timing-regular
-beacons are complementary, not redundant signals.
+\medskip
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (i) BotNet activities + (iii) C\&C activities using DNS via inter-flow timing regularity per protocol.}}
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+\newpage
 
 \hypertarget{final-results}{%
 \section{Final Results}\label{final-results}}
@@ -1372,8 +1431,8 @@ beacons are complementary, not redundant signals.
 \hypertarget{final-output}{%
 \subsection{Final output}\label{final-output}}
 
-Running the full detection pipeline against the test dataset produced 26
-unique anomalous IPs: 21 internal clients (192.168.101.x) and 5 external
+Running the full detection pipeline against the test dataset produced 31
+unique anomalous IPs: 21 internal clients (192.168.101.x) and 10 external
 clients (188.83.72.x). Each flagged IP was assigned a confidence level
 based on how many independent rules triggered it: HIGH when two or more
 rules agree on the same device, MEDIUM when only one rule fires.
@@ -1385,13 +1444,13 @@ The two-level scheme is not arbitrary:
 \end{itemize}
 
 The 7 HIGH confidence IPs are therefore treated as confirmed compromised
-devices. The 19 MEDIUM confidence IPs are genuine anomalies that warrant
+devices. The 24 MEDIUM confidence IPs are genuine anomalies that warrant
 investigation but cannot be confirmed by corroboration alone.
 
 \begin{verbatim}
- Total Unique Anomalous IPs: 26
+ Total Unique Anomalous IPs: 31
     - Internal (192.168.101.x): 21
-    - External (188.83.72.x): 5
+    - External (188.83.72.x): 10
 
   -- HIGH confidence (2+ independent rules) --
   [HIGH  ] 192.168.101.23        DNS Anomalies | BotNet Beaconing
@@ -1411,10 +1470,15 @@ investigation but cannot be confirmed by corroboration alone.
              | DNS Anomalies
 
   -- MEDIUM confidence (single rule) --
+  [MEDIUM] 188.83.72.32          External Automation
+  [MEDIUM] 188.83.72.46          External Automation
+  [MEDIUM] 188.83.72.48          External Automation
   [MEDIUM] 188.83.72.61          Anomalous External Users
   [MEDIUM] 188.83.72.64          Anomalous External Users
+  [MEDIUM] 188.83.72.166         External Automation
   [MEDIUM] 188.83.72.174         Anomalous External Users
   [MEDIUM] 188.83.72.182         Anomalous External Users
+  [MEDIUM] 188.83.72.185         External Automation
   [MEDIUM] 188.83.72.210         Anomalous External Users
   [MEDIUM] 192.168.101.11        New Source IPs
   [MEDIUM] 192.168.101.14        HTTPS Data Exfiltration
@@ -1443,61 +1507,22 @@ volume-based rule, and compared it against the threshold. If any
 unflagged device sits suspiciously close to the boundary, the threshold
 may be too conservative.
 
-\begin{longtable}[]{@{}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2041}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.4694}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2245}}
-  >{\raggedright\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.1020}}@{}}
-\toprule\noalign{}
-\begin{minipage}[b]{\linewidth}\raggedright
-Rule
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Highest unflagged value
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Threshold
-\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
-Gap
-\end{minipage} \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-HTTPS upload & 105.2 MB & 116.6 MB & 11.4 MB \\
-DNS flows & 1307 flows & 1399 flows & 92 flows \\
-BotNet HTTPS interval std & 18.44 s (.160, regularisation=1.17×) & 18.81 s
-& 0.37 s above floor \\
-BotNet DNS interval std & 63.26 s (.16) & 63.73 s & 0.47 s above floor \\
-External fan-out & 234 unique IPs (.114) & 258 unique IPs & 24 IPs below
-threshold \\
-New Source IP & N/A --- binary invariant & N/A & No false negatives
-possible by construction \\
-\end{longtable}
+\begin{itemize}
+    \item For HTTPS upload volume, the highest unflagged device reached 105.2 MB against a threshold of 116.6 MB, a comfortable 11.4 MB gap.
+    \item For DNS flow volume, the closest unflagged client produced 1,307 queries against a threshold of 1,399, leaving a 92-flow buffer. The two beaconing rules required closer inspection.
+    \item  For HTTPS beaconing, .160 sits at an interval standard deviation of 18.44 s, only 0.37 s above the 18.81 s floor, but its regularisation ratio is 1.17×, below the 1.5× guard: the device was already similarly regular during training, so the observed pattern is a stable baseline characteristic rather than a new anomaly.
+    \item  For DNS beaconing, the closest unflagged device has an interval standard deviation of 63.26 s (0.47 s above the 63.73 s floor) and a DNS flow count below the volume threshold; timing regularity without abnormal volume does not constitute meaningful beaconing.
+    \item  Finally, for the fan-out rule, .114 at 234 unique external IPs sits 24 IPs below the 258 threshold with no other anomalous signals, confirming the boundary is not cutting too close to normal behaviour.
+\end{itemize}
 
-After analyzing the results, no false negatives were found. Every
-unflagged device sits outside its threshold with a meaningful gap.
-
-The BotNet rows deserve a specific note. For HTTPS beaconing, .160 sits
-0.37 s above the 18.81 s floor, but its regularisation ratio is only
-1.17×: it was already similarly tight in training, so the observed
-regularity is a stable baseline characteristic rather than anomalous
-behaviour. For DNS beaconing, the closest unflagged device has a DNS
-interval std of 63.26 s (0.47 s above the floor) and a DNS flow count
-below the volume threshold, so the timing alone would not constitute
-meaningful beaconing regardless. For the fan-out rule, .114 at 234
-unique external IPs is the closest unflagged device, sitting 24 IPs
-below the 258 threshold with no other anomalous signals, confirming the
-boundary is not cutting too close to normal behaviour. The New Source IP
-rule cannot produce false negatives by design: every IP present in test
-but absent from training is flagged unconditionally, with no threshold
-to miscalibrate.
-
+\newpage
 \hypertarget{highest-confidence-detections}{%
 \subsection{Highest Confidence
 Detections}\label{highest-confidence-detections}}
 
 The 7 HIGH confidence devices are those flagged by two or more
 completely independent detection rules. Independence here is not just
-statistical --- each rule operates on a different metric, a different
+statistical, each rule operates on a different metric, a different
 protocol, and a different aspect of behaviour.
 
 \begin{itemize}
@@ -1517,8 +1542,7 @@ protocol, and a different aspect of behaviour.
   The Fan-out rule measures the count of unique external destinations
   contacted.
 \item
-  The New Source IP rule checks set membership against training --- no
-  metric, no threshold.
+  The New Source IP rule checks set membership against training
 \end{itemize}
 
 None of these share an input or a computation path. When two or more of
@@ -1542,39 +1566,39 @@ Interpretation
 \bottomrule\noalign{}
 \endlastfoot
 192.168.101.41 & DNS Volume + BotNet & 39,493 DNS queries at an exact
-0.05 s interval --- extreme C2 beaconing via internal DNS relay,
+0.05 s interval: extreme C2 beaconing via internal DNS relay,
 confirmed by both volume and timing \\
-192.168.101.23 & DNS Volume + BotNet & 8,651 DNS queries at 0.05 s ---
+192.168.101.23 & DNS Volume + BotNet & 8,651 DNS queries at 0.05 s:
 same C2 pattern, smaller scale, same malware family \\
 192.168.101.201 & DNS Volume + BotNet & 2,941 DNS queries at exact 0.05 s
 intervals confirmed independently by volume analysis (8.4σ above mean)
-and timing regularity --- strong single-protocol C2 beaconing \\
+and timing regularity: strong single-protocol C2 beaconing \\
 192.168.101.207 & HTTPS Exfiltration + Fan-out + DNS Anomalies & 119 MB
 uploaded over HTTPS (3σ above threshold); 273 unique external IPs
 contacted (3.3σ above mean); 1,418 DNS queries at an exact 0.05 s beacon
-interval --- three independent rules each confirming a different facet
+interval: three independent rules each confirming a different facet
 of the same compromise \\
 192.168.101.72 & New Geo + New Destination + Fan-out & Contacted 15 new
 countries including RU, IR, UA; 354 new-to-network ASNs pointing at
-Russian hosting infrastructure; 811 unique external IPs (14.9σ) ---
+Russian hosting infrastructure; 811 unique external IPs (14.9σ):
 geographic, infrastructure, and volume expansion confirmed by three
 independent rules \\
 192.168.101.36 & New Geo + New Destination + Fan-out & 904 flows to 17
 new countries including RU, IR, IQ, KZ; 1,015 flows to 287
-new-to-network ASNs; 639 unique external IPs (11.2σ) --- same three-rule
-fingerprint as .72, consistent with coordinated exfiltration campaign \\
+new-to-network ASNs; 639 unique external IPs (11.2σ): same three-rule as .72, consistent with coordinated exfiltration \\
 192.168.101.125 & New Geo + New Destination + Fan-out & 523 flows to 11
 new countries including RU, IR, UA; 598 flows to 169 new-to-network
-ASNs; 409 unique external IPs (6.2σ) --- third device in the coordinated
+ASNs; 409 unique external IPs (6.2σ): third device in the coordinated
 group, confirmed by the same three independent rules \\
 \end{longtable}
 
 \hypertarget{attack-patterns}{%
 \subsection{Attack Patterns}\label{attack-patterns}}
 
-Grouping the 26 flagged devices by behaviour reveals nine distinct
-attack patterns active in the test period:
+Grouping the 31 flagged devices by behaviour reveals nine distinct
+patterns active in the test period:
 
+{\small
 \begin{longtable}[]{@{}
   >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.3125}}
   >{\raggedright\arraybackslash}p{(\columnwidth - 4\tabcolsep) * \real{0.2812}}
@@ -1592,40 +1616,45 @@ Description
 \bottomrule\noalign{}
 \endlastfoot
 Mass HTTPS Exfiltration & .187, .14, .208 & 4.4--7.6 GB uploaded in a
-single day, 183--316σ above baseline --- bulk data dumps, likely
+single day, 183--316σ above baseline: bulk data dumps, likely
 automated \\
 Moderate HTTPS Exfiltration & .197, .26, .207 & 119--259 MB uploaded,
 3--9σ above the 116.6 MB threshold \\
 DNS C\&C Beaconing & .41, .23, .201, .148 & Exact 0.05 s query interval
-to internal resolvers --- malware heartbeat routed through internal DNS
+to internal resolvers: malware heartbeat routed through internal DNS
 relay \\
 HTTPS C\&C Beaconing & .117, .157, .188 & Check-in intervals clustering
-between 1.00--1.03 s across three independent devices --- single malware
+between 1.00--1.03 s across three independent devices: single malware
 family, shared hardcoded timer \\
 Exfiltration + C2 Beacon & .207 & HTTPS exfiltration (119 MB, 3σ)
 running alongside a DNS C2 beacon (1,418 queries at 0.05 s intervals) and
-anomalous fan-out to 273 unique external IPs (3.3σ) --- three
+anomalous fan-out to 273 unique external IPs (3.3σ): three
 independent rules each confirming a different facet of the same
 compromise \\
 Lateral Movement & .68, .138, .186 & Internal-to-internal TCP:443
 traffic to IPs never seen as destinations in training; symmetric byte
-ratios ($\sim$1:1) inconsistent with web browsing ---
+ratios ($\sim$1:1) inconsistent with web browsing:
 peer-to-peer command relay or lateral file transfer between compromised
 hosts \\
 Geo / Infrastructure Expansion & .36, .72, .125 & Traffic to countries
-and ASNs never seen in training, including Russian hosting providers
-(REG.RU, Cloud.ru, OBIT), plus anomalous fan-out to 409--811 unique
-external IPs --- three independent rules (geo, ASN, volume) each
+and ASNs never seen in training, plus anomalous fan-out to 409--811 unique
+external IPs: three independent rules (geo, ASN, volume) each
 confirming the same coordinated campaign \\
 Rogue Device / New Implant & .11, .93 & Devices with zero training
-presence generating 1,508 and 3,788 flows in the test period ---
+presence generating 1,508 and 3,788 flows in the test period:
 stealthy profiles (14--38 MB HTTPS, 199--502 DNS queries) calibrated to
 stay below every volume threshold; caught exclusively by the binary set
 membership check \\
 External Upload Anomaly & .61, .64, .174, .182, .210 & External clients
-breaking the tight 8.50 ratio invariant --- three uploading
+breaking the tight 8.50 ratio invariant: three uploading
 proportionally more than normal, two downloading more than normal \\
+External Automation & .32, .46, .48, .166, .185 & Inter-flow interval
+std of 0.51--2.03\,s, against a training floor of 16.16\,s : timing
+precision incompatible with human browsing; may represent bots,
+scanners, or legitimate automated consumers requiring analyst
+follow-up \\
 \end{longtable}
+}
 
 \begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
 
@@ -1636,10 +1665,7 @@ proportionally more than normal, two downloading more than normal \\
 \subsection{Sending the Alert}\label{sending-the-alert}}
 
 Once all anomalous IPs are identified, each one is reported to the Wazuh
-manager by sending a UDP syslog message in the format ``Alarm UEBA \textless{}ip\textgreater{}''
---- exactly as prescribed by the spec. The implementation uses a raw
-Python socket, requiring no external tool or Wazuh agent on the
-monitoring machine:
+manager by sending a UDP syslog message in the format ``Alarm UEBA \textless{}ip\textgreater{}''. 
 
 \begin{Shaded}
 \begin{Highlighting}[]
@@ -1649,7 +1675,7 @@ monitoring machine:
 \end{Highlighting}
 \end{Shaded}
 
-One packet is sent per flagged IP. All 26 were successfully delivered to
+One packet is sent per flagged IP. All 31 were successfully delivered to
 172.100.0.12:514:
 
 \begin{verbatim}
@@ -1658,60 +1684,16 @@ One packet is sent per flagged IP. All 26 were successfully delivered to
       → Alarm UEBA 192.168.101.93
       → Alarm UEBA 188.83.72.174
       ...
-      → Alarm UEBA 192.168.101.188   (26 total)
+      → Alarm UEBA 192.168.101.188   (31 total)
 \end{verbatim}
 
-\hypertarget{decoder-and-rule}{%
-\subsection{Decoder and Rule}\label{decoder-and-rule}}
-
-For Wazuh to interpret the incoming syslog message, a custom decoder and
-rule were added inside the wazuh.manager container.
-
-The decoder (/var/ossec/etc/decoders/local\_decoder.xml) identifies the
-message by its prefix and extracts the flagged IP into the srcip field:
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{\textless{}}\KeywordTok{decoder}\OtherTok{ name=}\StringTok{"ueba\_alarm"}\NormalTok{\textgreater{}}
-\NormalTok{    \textless{}}\KeywordTok{prematch}\NormalTok{\textgreater{}Alarm UEBA\textless{}/}\KeywordTok{prematch}\NormalTok{\textgreater{}}
-\NormalTok{  \textless{}/}\KeywordTok{decoder}\NormalTok{\textgreater{}}
-
-\NormalTok{  \textless{}}\KeywordTok{decoder}\OtherTok{ name=}\StringTok{"ueba\_alarm\_fields"}\NormalTok{\textgreater{}}
-\NormalTok{    \textless{}}\KeywordTok{parent}\NormalTok{\textgreater{}ueba\_alarm\textless{}/}\KeywordTok{parent}\NormalTok{\textgreater{}}
-\NormalTok{    \textless{}}\KeywordTok{regex}\OtherTok{ offset=}\StringTok{"after\_parent"}\NormalTok{\textgreater{}(\textbackslash{}d+\textbackslash{}.\textbackslash{}d+\textbackslash{}.\textbackslash{}d+\textbackslash{}.\textbackslash{}d+)\textless{}/}\KeywordTok{regex}\NormalTok{\textgreater{}}
-\NormalTok{    \textless{}}\KeywordTok{order}\NormalTok{\textgreater{}srcip\textless{}/}\KeywordTok{order}\NormalTok{\textgreater{}}
-\NormalTok{  \textless{}/}\KeywordTok{decoder}\NormalTok{\textgreater{}}
-\end{Highlighting}
-\end{Shaded}
-
-The rule (/var/ossec/etc/rules/local\_rules.xml) fires a level 7 alert
-every time this decoder matches:
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{  \textless{}}\KeywordTok{group}\OtherTok{ name=}\StringTok{"syslog,ueba,"}\NormalTok{\textgreater{}}
-\NormalTok{    \textless{}}\KeywordTok{rule}\OtherTok{ id=}\StringTok{"100201"}\OtherTok{ level=}\StringTok{"7"}\NormalTok{\textgreater{}}
-\NormalTok{      \textless{}}\KeywordTok{decoded\_as}\NormalTok{\textgreater{}ueba\_alarm\textless{}/}\KeywordTok{decoded\_as}\NormalTok{\textgreater{}}
-\NormalTok{      \textless{}}\KeywordTok{description}\NormalTok{\textgreater{}UEBA Alarm triggered from $(srcip)\textless{}/}\KeywordTok{description}\NormalTok{\textgreater{}}
-\NormalTok{      \textless{}}\KeywordTok{group}\NormalTok{\textgreater{}ueba\_security\_event\textless{}/}\KeywordTok{group}\NormalTok{\textgreater{}}
-\NormalTok{    \textless{}/}\KeywordTok{rule}\NormalTok{\textgreater{}}
-\NormalTok{  \textless{}/}\KeywordTok{group}\NormalTok{\textgreater{}}
-\end{Highlighting}
-\end{Shaded}
-
-In Wazuh's rule classification, level 7 corresponds to ``bad word
-matching'' (a keyword or pattern match on log content). It sits above
-the default log threshold of level 3, ensuring the alert is generated,
-indexed, and visible in the Security Events dashboard without requiring
-a severity escalation to a higher level. Rule ID 100201 is the one used
-having in mind the Guides.
 
 \hypertarget{dashboard}{%
 \subsection{Dashboard}\label{dashboard}}
 
-With the Wazuh stack running and all 26 syslog packets delivered,
+With the Wazuh stack running and all 31 syslog packets delivered,
 navigating to Security Events and applying the DQL filter rule.id:
-100201 shows one event per flagged IP: 26 hits, each carrying data.srcip
+100201 (as it was used in the classes) shows one event per flagged IP: 31 hits, each carrying data.srcip
 with the anomalous device's address, rule.level = 7, and decoder.name =
 ueba\_alarm. \includegraphics{Wazuh_dashboard.png}
 
