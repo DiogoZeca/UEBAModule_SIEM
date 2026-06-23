@@ -658,9 +658,9 @@ Spec Requirement & Step(s) & Signal dimension \\
 \bottomrule\noalign{}
 \endlastfoot
 (i) BotNet activities & Step 6 & Inter-flow timing regularity per protocol \\
-(ii) HTTPS data exfiltration & Step 3 & Upload volume \\
-(ii) DNS data exfiltration & Step 5 sub-rule 1 & DNS query volume \\
-(iii) C\&C activities using DNS & Step 5 sub-rule 2 + Step 6 (DNS) & Resolver bypass + timing regularity \\
+(ii) HTTPS data exfiltration & Step 3 & Upload volume + down/up ratio \\
+(ii) DNS data exfiltration & Step 5 & DNS query volume \\
+(iii) C\&C activities using DNS & Step 5 (volume) + Step 6 (DNS timing) & Volume anomaly + timing regularity \\
 (iv) Anomalous external destinations & Steps 4, 4b, 4c & Geography, ASN infrastructure, unique IP count \\
 (v) External users anomalous & Steps 2, 2b & Down/up byte ratio + inter-flow timing regularity \\
 \textit{(bonus)} Rogue/new devices & Step 1 & Set membership — no threshold needed \\
@@ -908,16 +908,27 @@ analyst follow-up.
 \subsubsection{What to look for}\label{what-to-look-for-2}}
 
 The HTTPS exfiltration rule targets internal clients sending an abnormal
-amount of data outbound over HTTPS. The detection metric is total upload
-volume per client: any client uploading more than mean + 3σ (116.6 MB)
-in the test period is flagged. Measuring cumulative volume over the full
-observation window, rather than peak rate or per-session bytes, is a
-deliberate design choice: a low-and-slow exfiltrator operating at a
-modest rate stays invisible to rate-based rules, but its data
-accumulates across the test period and will eventually cross the total
-volume threshold.
+amount of data outbound over HTTPS using two complementary sub-rules.
 
-A second signal, the PCR (Producer-Consumer Ratio), was implemented and
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Sub-rule A (Volume):} flags any client uploading more than
+  mean + 3σ (116.6 MB) in the test period. Measuring cumulative volume
+  over the full observation window is a deliberate design choice: a
+  low-and-slow exfiltrator stays invisible to rate-based rules, but its
+  data accumulates and eventually crosses the total volume threshold.
+\item
+  \textbf{Sub-rule B (Down/up ratio):} flags any client whose HTTPS
+  down/up ratio falls below mean − 3σ (threshold: 8.56). A normal
+  internal client downloads roughly 9.24× what it uploads (browsing
+  pattern). An exfiltrating client inverts this balance: it uploads
+  heavily while downloading little, producing a dramatically low ratio
+  regardless of absolute byte count. This catches devices whose
+  exfiltration volume alone stays below the 116.6 MB threshold.
+\end{itemize}
+
+A third signal, the PCR (Producer-Consumer Ratio), was implemented and
 evaluated before finalising this rule. PCR = (up − down) / (up + down)
 measures the upload/download balance independently of volume. The
 training mean was −0.8046 (heavily download-dominant), and the 3σ
@@ -925,55 +936,58 @@ threshold was −0.7918. Applied to the test data, PCR flagged four
 additional IPs with upload volumes well below the training mean. On
 closer inspection, these were false positives: with few HTTPS flows,
 natural variance in the upload/download balance is enough to push PCR
-across the threshold. PCR was removed; the devices it would have caught
-are independently and more reliably detected by the BotNet beaconing
-rule through timing analysis.
+across the threshold. PCR was removed in favour of the direct ratio
+sub-rule above.
 
 \subsubsection{Code Implementation}
 
-
-
 \begin{Shaded}
 \begin{Highlighting}[]
-\NormalTok{flagged }\OperatorTok{=}\NormalTok{ per\_ip[}\StringTok{\textquotesingle{}total\_up\textquotesingle{}}\NormalTok{] }\OperatorTok{\textgreater{}}\NormalTok{ vol\_threshold  }\CommentTok{\# \textgreater{} 116.6 MB}
+\CommentTok{\# Sub-rule A: upload volume}
+\NormalTok{vol\_flag   }\OperatorTok{=}\NormalTok{ per\_ip[}\StringTok{\textquotesingle{}total\_up\textquotesingle{}}\NormalTok{] }\OperatorTok{\textgreater{}}\NormalTok{ vol\_threshold   }\CommentTok{\# \textgreater{} 116.6 MB}
+\CommentTok{\# Sub-rule B: down/up ratio}
+\NormalTok{ratio\_flag }\OperatorTok{=}\NormalTok{ per\_ip[}\StringTok{\textquotesingle{}ratio\textquotesingle{}}\NormalTok{] }\OperatorTok{\textless{}}\NormalTok{ ratio\_low          }\CommentTok{\# \textless{} 8.56  (mean-3σ)}
+\NormalTok{flagged    }\OperatorTok{=}\NormalTok{ per\_ip[vol\_flag }\OperatorTok{|}\NormalTok{ ratio\_flag]}
 \end{Highlighting}
 \end{Shaded}
 
-The threshold is derived from combined HTTPS traffic (internal .240 +
-external servers). Both groups show near-identical down/up ratios
-($\sim$9.23), confirming the combined aggregate is a valid
-baseline for volume normalisation.
-
-One metric was evaluated and removed before arriving at this design: the
-raw down/up ratio (total\_down / total\_up), which is the same metric
-used for external clients. An equivalent internal ratio was computed and
-applied to the test data. It flagged the identical set of IPs as the
-volume threshold: zero additional detections. The raw ratio approach was
-dropped in favour of the simpler volume threshold alone.
+Both thresholds are derived from the training distribution of internal
+HTTPS clients. The ratio mean is 9.24 with std 0.23, computed across all
+internal HTTPS traffic; the volume mean is 20.4 MB with std 32.1 MB.
 
 \subsubsection{Results}
 
-
-The rule flagged 6 internal IPs:
+The rule flagged 10 internal IPs across the two sub-rules:
 
 \begin{verbatim}
-[ALERT] 192.168.101.187  upload=7586 MB  deviation=316σ
-[ALERT] 192.168.101.14   upload=5352 MB  deviation=223σ
-[ALERT] 192.168.101.208  upload=4402 MB  deviation=183σ
-[ALERT] 192.168.101.26   upload=259 MB   deviation=9σ
-[ALERT] 192.168.101.197  upload=138 MB   deviation=4σ
-[ALERT] 192.168.101.207  upload=119 MB   deviation=3σ
+[ALERT] 192.168.101.187  upload=7586 MB (316σ); ratio=0.14 (40.2σ)
+[ALERT] 192.168.101.14   upload=5352 MB (223σ); ratio=0.05 (40.5σ)
+[ALERT] 192.168.101.208  upload=4402 MB (183σ); ratio=0.11 (40.3σ)
+[ALERT] 192.168.101.26   upload=259 MB  (9σ);   ratio=1.97 (32.1σ)
+[ALERT] 192.168.101.197  upload=138 MB  (4σ);   ratio=2.38 (30.3σ)
+[ALERT] 192.168.101.207  upload=119 MB  (3σ)
+[ALERT] 192.168.101.188  ratio=3.80 (24.0σ)
+[ALERT] 192.168.101.117  ratio=8.23  (4.5σ)
+[ALERT] 192.168.101.128  ratio=8.45  (3.5σ)
+[ALERT] 192.168.101.78   ratio=8.51  (3.2σ)
 \end{verbatim}
 
-All six devices exceed the 116.6 MB threshold cleanly. The top three
-(.187, .14, .208) represent bulk data dumps at 4.4--7.6 GB, 183--316σ
-above baseline, that are orders of magnitude beyond any legitimate client in
-training. The remaining three (.26, .197, .207) sit between 119 MB and
-259 MB, each clearly distinguishable from the highest unflagged device
-at 105.2 MB.
+The first five IPs are flagged by both sub-rules simultaneously: their
+ratios range from 0.05 to 2.38, meaning they download only 0.05--2.38×
+what they upload — the clearest possible exfiltration signature,
+independently confirmed by both volume and ratio at 30--40σ deviation.
+The top three (.187, .14, .208) represent bulk data dumps at 4.4--7.6 GB,
+183--316σ above baseline.
+
+Four IPs are flagged exclusively by the ratio sub-rule. .188 is the most
+significant at 24.0σ: it uploads heavily relative to its downloads while
+keeping volume below the 116.6 MB threshold — exactly the profile of a
+targeted low-and-slow exfiltrator. .117 (4.5σ), .128 (3.5σ) and .78
+(3.2σ) show a progressively less extreme but still statistically clear
+upload bias.
 
 \medskip
-\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (ii) HTTPS data exfiltration via upload volume anomaly.}}
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (ii) HTTPS data exfiltration via upload volume (sub-rule A) and down/up ratio anomaly (sub-rule B).}}
 
 \hypertarget{geodestination-anomaly-detection}{%
 \subsection{Step 4 — GeoDestination Anomaly Detection}\label{geodestination-anomaly-detection}}
@@ -1104,12 +1118,12 @@ simply never contacted during training regardless of country.
 \CommentTok{\# Sub{-}rule A — new external ASN (global training set)}
 \NormalTok{pub\_test[}\StringTok{\textquotesingle{}asn\textquotesingle{}}\NormalTok{] }\OperatorTok{=}\NormalTok{ pub\_test[}\StringTok{\textquotesingle{}dst\_ip\textquotesingle{}}\NormalTok{].}\BuiltInTok{apply}\NormalTok{(get\_asn)}
 \NormalTok{new\_asns }\OperatorTok{=} \BuiltInTok{set}\NormalTok{(grp[}\StringTok{\textquotesingle{}asn\textquotesingle{}}\NormalTok{].dropna().unique()) }\OperatorTok{{-}}\NormalTok{ global\_train\_asns}
-\ControlFlowTok{if}\NormalTok{ new\_asns }\KeywordTok{and}\NormalTok{ flows }\OperatorTok{\textgreater{}=}\NormalTok{ MIN\_NEW\_EXTERNAL\_FLOWS:  }\CommentTok{\# MIN = 10}
+\ControlFlowTok{if}\NormalTok{ new\_asns }\KeywordTok{and}\NormalTok{ flows }\OperatorTok{\textgreater{}=}\NormalTok{ baselines[}\StringTok{\textquotesingle{}new\_asn\_min\_flows\textquotesingle{}}\NormalTok{]:  }\CommentTok{\# p10 training = 5}
     \CommentTok{\# fire alert}
 
 \CommentTok{\# Sub{-}rule B — new internal destination (global training set)}
 \NormalTok{new\_dsts }\OperatorTok{=} \BuiltInTok{set}\NormalTok{(grp[}\StringTok{\textquotesingle{}dst\_ip\textquotesingle{}}\NormalTok{].unique()) }\OperatorTok{{-}}\NormalTok{ global\_train\_internal\_dsts}
-\ControlFlowTok{if}\NormalTok{ new\_dsts }\KeywordTok{and}\NormalTok{ flows }\OperatorTok{\textgreater{}=}\NormalTok{ MIN\_NEW\_INTERNAL\_FLOWS:  }\CommentTok{\# MIN = 5}
+\ControlFlowTok{if}\NormalTok{ new\_dsts }\KeywordTok{and}\NormalTok{ flows }\OperatorTok{\textgreater{}=}\NormalTok{ baselines[}\StringTok{\textquotesingle{}new\_int\_min\_flows\textquotesingle{}}\NormalTok{]:  }\CommentTok{\# p10 training = 108}
     \CommentTok{\# fire alert}
 \end{Highlighting}
 \end{Shaded}
@@ -1326,7 +1340,7 @@ training baseline, with queries concentrated almost entirely on the two
 internal resolvers.
 
 \medskip
-\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (ii) DNS data exfiltration (sub-rule 1: volume) + (iii) C\&C activities using DNS (sub-rule 2: resolver bypass).}}
+\noindent\colorbox{gray!12}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{Spec requirement covered:} (ii) DNS data exfiltration via query volume anomaly + (iii) C\&C activities using DNS via timing regularity (Step 6).}}
 
 \hypertarget{botnet-beacon-detection}{%
 \subsection{Step 6 — BotNet Beacon Detection}\label{botnet-beacon-detection}}
@@ -1431,8 +1445,8 @@ is only 1.17× (barely changed from training).
 \hypertarget{final-output}{%
 \subsection{Final output}\label{final-output}}
 
-Running the full detection pipeline against the test dataset produced 31
-unique anomalous IPs: 21 internal clients (192.168.101.x) and 10 external
+Running the full detection pipeline against the test dataset produced 33
+unique anomalous IPs: 23 internal clients (192.168.101.x) and 10 external
 clients (188.83.72.x). Each flagged IP was assigned a confidence level
 based on how many independent rules triggered it: HIGH when two or more
 rules agree on the same device, MEDIUM when only one rule fires.
@@ -1443,13 +1457,13 @@ The two-level scheme is not arbitrary:
   \item When two completely independent detection methods both flag the same IP on the same day, the probability of a coincidental double false positive is the product of the individual rates, dropping to approximately 0.0001\% per device.
 \end{itemize}
 
-The 7 HIGH confidence IPs are therefore treated as confirmed compromised
+The 9 HIGH confidence IPs are therefore treated as confirmed compromised
 devices. The 24 MEDIUM confidence IPs are genuine anomalies that warrant
 investigation but cannot be confirmed by corroboration alone.
 
 \begin{verbatim}
- Total Unique Anomalous IPs: 31
-    - Internal (192.168.101.x): 21
+ Total Unique Anomalous IPs: 33
+    - Internal (192.168.101.x): 23
     - External (188.83.72.x): 10
 
   -- HIGH confidence (2+ independent rules) --
@@ -1461,9 +1475,11 @@ investigation but cannot be confirmed by corroboration alone.
   [HIGH  ] 192.168.101.72
              New Country Destinations | New Destination IPs / ASNs
              | External Destination Fan-out
+  [HIGH  ] 192.168.101.117       HTTPS Data Exfiltration | BotNet Beaconing
   [HIGH  ] 192.168.101.125
              New Country Destinations | New Destination IPs / ASNs
              | External Destination Fan-out
+  [HIGH  ] 192.168.101.188       HTTPS Data Exfiltration | BotNet Beaconing
   [HIGH  ] 192.168.101.201       DNS Anomalies | BotNet Beaconing
   [HIGH  ] 192.168.101.207
              HTTPS Data Exfiltration | External Destination Fan-out
@@ -1484,14 +1500,14 @@ investigation but cannot be confirmed by corroboration alone.
   [MEDIUM] 192.168.101.14        HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.26        HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.68        New Destination IPs / ASNs
+  [MEDIUM] 192.168.101.78        HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.93        New Source IPs
-  [MEDIUM] 192.168.101.117       BotNet Beaconing
+  [MEDIUM] 192.168.101.128       HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.138       New Destination IPs / ASNs
   [MEDIUM] 192.168.101.148       DNS Anomalies
   [MEDIUM] 192.168.101.157       BotNet Beaconing
   [MEDIUM] 192.168.101.186       New Destination IPs / ASNs
   [MEDIUM] 192.168.101.187       HTTPS Data Exfiltration
-  [MEDIUM] 192.168.101.188       BotNet Beaconing
   [MEDIUM] 192.168.101.197       HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.208       HTTPS Data Exfiltration
 \end{verbatim}
@@ -1520,7 +1536,7 @@ may be too conservative.
 \subsection{Highest Confidence
 Detections}\label{highest-confidence-detections}}
 
-The 7 HIGH confidence devices are those flagged by two or more
+The 9 HIGH confidence devices are those flagged by two or more
 completely independent detection rules. Independence here is not just
 statistical, each rule operates on a different metric, a different
 protocol, and a different aspect of behaviour.
@@ -1578,6 +1594,14 @@ uploaded over HTTPS (3σ above threshold); 273 unique external IPs
 contacted (3.3σ above mean); 1,418 DNS queries at an exact 0.05 s beacon
 interval: three independent rules each confirming a different facet
 of the same compromise \\
+192.168.101.188 & HTTPS Exfiltration (ratio) + BotNet & Down/up ratio
+of 3.80 (24.0σ below baseline): uploading 3.8× what it downloads while
+a confirmed HTTPS beacon fires at 1.03 s intervals — simultaneous
+exfiltration and C2 \\
+192.168.101.117 & HTTPS Exfiltration (ratio) + BotNet & Down/up ratio
+of 8.23 (4.5σ below baseline) alongside HTTPS beaconing at 1.00 s
+intervals (8.46× more regular than training): exfiltration confirmed
+by two orthogonal signals \\
 192.168.101.72 & New Geo + New Destination + Fan-out & Contacted 15 new
 countries including RU, IR, UA; 354 new-to-network ASNs pointing at
 Russian hosting infrastructure; 811 unique external IPs (14.9σ):
@@ -1595,7 +1619,7 @@ group, confirmed by the same three independent rules \\
 \hypertarget{attack-patterns}{%
 \subsection{Attack Patterns}\label{attack-patterns}}
 
-Grouping the 31 flagged devices by behaviour reveals nine distinct
+Grouping the 33 flagged devices by behaviour reveals nine distinct
 patterns active in the test period:
 
 {\small
@@ -1616,10 +1640,13 @@ Description
 \bottomrule\noalign{}
 \endlastfoot
 Mass HTTPS Exfiltration & .187, .14, .208 & 4.4--7.6 GB uploaded in a
-single day, 183--316σ above baseline: bulk data dumps, likely
-automated \\
+single day, 183--316σ above baseline: bulk data dumps flagged by both
+volume and ratio sub-rules simultaneously \\
 Moderate HTTPS Exfiltration & .197, .26, .207 & 119--259 MB uploaded,
-3--9σ above the 116.6 MB threshold \\
+3--9σ above the 116.6 MB volume threshold \\
+HTTPS Ratio Exfiltration & .188, .117, .128, .78 & Upload-heavy ratio
+(3.2--24.0σ below baseline of 9.24): volume stays below the threshold
+but the down/up imbalance reveals sustained exfiltration behaviour \\
 DNS C\&C Beaconing & .41, .23, .201, .148 & Exact 0.05 s query interval
 to internal resolvers: malware heartbeat routed through internal DNS
 relay \\
@@ -1675,7 +1702,7 @@ manager by sending a UDP syslog message in the format ``Alarm UEBA \textless{}ip
 \end{Highlighting}
 \end{Shaded}
 
-One packet is sent per flagged IP. All 31 were successfully delivered to
+One packet is sent per flagged IP. All 33 were successfully delivered to
 172.100.0.12:514:
 
 \begin{verbatim}
@@ -1684,17 +1711,17 @@ One packet is sent per flagged IP. All 31 were successfully delivered to
       → Alarm UEBA 192.168.101.93
       → Alarm UEBA 188.83.72.174
       ...
-      → Alarm UEBA 192.168.101.188   (31 total)
+      → Alarm UEBA 192.168.101.188   (33 total)
 \end{verbatim}
 
 
 \hypertarget{dashboard}{%
 \subsection{Dashboard}\label{dashboard}}
 
-With the Wazuh stack running and all 31 syslog packets delivered,
+With the Wazuh stack running and all 33 syslog packets delivered,
 navigating to Security Events and applying the DQL filter rule.id:
 100201 (as it was used in the classes) shows one event per flagged IP:
-31 hits, each carrying data.srcip with the anomalous device's address,
+33 hits, each carrying data.srcip with the anomalous device's address,
 rule.level = 7, and decoder.name = ueba\_alarm.
 
 \begin{figure}[h]
@@ -1705,7 +1732,7 @@ rule.level = 7, and decoder.name = ueba\_alarm.
 \hypertarget{conclusion}{%
 \subsection{Conclusion}\label{conclusion}}
 
-The UEBA module identified 31 anomalous devices (21 internal and 10
+The UEBA module identified 33 anomalous devices (23 internal and 10
 external) across nine distinct behavioural patterns in the test
 period. Every threshold was derived exclusively from the training
 dataset, ensuring that no test-period information influenced the
@@ -1721,7 +1748,7 @@ infrastructure novelty flags coordinated reconnaissance campaigns; and
 set-membership checks catch rogue devices that deliberately stay below
 every volume threshold.
 
-The seven HIGH-confidence detections, each corroborated by two or more
+The nine HIGH-confidence detections, each corroborated by two or more
 independent rules measuring entirely different signals, represent the
 strongest candidates for immediate escalation. The 24 MEDIUM-confidence
 detections provide a prioritised triage list where every alert carries

@@ -10,8 +10,11 @@
     HTTPS beaconing p05     : 18.81s
     DNS beaconing p05       : 63.73s
     External ratio window   : [8.3817, 8.6226]
-    Internal DNS servers    : {'192.168.101.226', '192.168.101.229'}
+    Internal DNS servers    : {'192.168.101.229', '192.168.101.226'}
+    HTTPS ratio threshold   : 8.5618  (mean-3σ = 9.2419±0.2267)
     Geo min intensity flows : 3 flows  (p10 of per-IP/country flow counts)
+    New ASN min flows       : 5 flows  (p10 of per-IP/ASN flow counts)
+    New internal min flows  : 108 flows  (p10 of per-IP/internal-dst flow counts)
     External fan-out threshold : 258 unique dst IPs  (mean+3σ)
     External automation threshold : 16.16s  (training minimum — no training client was ever below this)
 
@@ -118,32 +121,52 @@
   [1] Rule   : HTTPS Data Exfiltration
        IP     : 192.168.101.187
        Threat : Data exfiltration over HTTPS
-       Why    : Uploaded 7586 MB — 316σ above mean (threshold: 117 MB)
+       Why    : uploaded 7586 MB — 316σ above mean (threshold: 117 MB); down/up ratio=0.14 (40.2σ below baseline 9.24±0.23; threshold 8.56)
 
   [2] Rule   : HTTPS Data Exfiltration
        IP     : 192.168.101.14
        Threat : Data exfiltration over HTTPS
-       Why    : Uploaded 5352 MB — 223σ above mean (threshold: 117 MB)
+       Why    : uploaded 5352 MB — 223σ above mean (threshold: 117 MB); down/up ratio=0.05 (40.5σ below baseline 9.24±0.23; threshold 8.56)
 
   [3] Rule   : HTTPS Data Exfiltration
        IP     : 192.168.101.208
        Threat : Data exfiltration over HTTPS
-       Why    : Uploaded 4402 MB — 183σ above mean (threshold: 117 MB)
+       Why    : uploaded 4402 MB — 183σ above mean (threshold: 117 MB); down/up ratio=0.11 (40.3σ below baseline 9.24±0.23; threshold 8.56)
 
   [4] Rule   : HTTPS Data Exfiltration
        IP     : 192.168.101.26
        Threat : Data exfiltration over HTTPS
-       Why    : Uploaded 259 MB — 9σ above mean (threshold: 117 MB)
+       Why    : uploaded 259 MB — 9σ above mean (threshold: 117 MB); down/up ratio=1.97 (32.1σ below baseline 9.24±0.23; threshold 8.56)
 
   [5] Rule   : HTTPS Data Exfiltration
        IP     : 192.168.101.197
        Threat : Data exfiltration over HTTPS
-       Why    : Uploaded 138 MB — 4σ above mean (threshold: 117 MB)
+       Why    : uploaded 138 MB — 4σ above mean (threshold: 117 MB); down/up ratio=2.38 (30.3σ below baseline 9.24±0.23; threshold 8.56)
 
   [6] Rule   : HTTPS Data Exfiltration
        IP     : 192.168.101.207
        Threat : Data exfiltration over HTTPS
-       Why    : Uploaded 119 MB — 3σ above mean (threshold: 117 MB)
+       Why    : uploaded 119 MB — 3σ above mean (threshold: 117 MB)
+
+  [7] Rule   : HTTPS Data Exfiltration
+       IP     : 192.168.101.188
+       Threat : Data exfiltration over HTTPS
+       Why    : down/up ratio=3.80 (24.0σ below baseline 9.24±0.23; threshold 8.56)
+
+  [8] Rule   : HTTPS Data Exfiltration
+       IP     : 192.168.101.78
+       Threat : Data exfiltration over HTTPS
+       Why    : down/up ratio=8.51 (3.2σ below baseline 9.24±0.23; threshold 8.56)
+
+  [9] Rule   : HTTPS Data Exfiltration
+       IP     : 192.168.101.128
+       Threat : Data exfiltration over HTTPS
+       Why    : down/up ratio=8.45 (3.5σ below baseline 9.24±0.23; threshold 8.56)
+
+  [10] Rule   : HTTPS Data Exfiltration
+       IP     : 192.168.101.117
+       Threat : Data exfiltration over HTTPS
+       Why    : down/up ratio=8.23 (4.5σ below baseline 9.24±0.23; threshold 8.56)
 
 
 ════════════════════════════════════════════════════════════
@@ -289,8 +312,8 @@
 ════════════════════════════════════════════════════════════
   FINAL CONSOLIDATED REPORT
 ════════════════════════════════════════════════════════════
-  Total unique anomalous IPs : 31
-  Internal (192.168.101.x)   : 21
+  Total unique anomalous IPs : 33
+  Internal (192.168.101.x)   : 23
   External (188.83.72.x)     : 10
 
   [HIGH  ] 192.168.101.36        New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out
@@ -299,6 +322,8 @@
   [HIGH  ] 192.168.101.207       HTTPS Data Exfiltration | External Destination Fan-out | DNS Anomalies
   [HIGH  ] 192.168.101.23        DNS Anomalies | BotNet Beaconing
   [HIGH  ] 192.168.101.41        DNS Anomalies | BotNet Beaconing
+  [HIGH  ] 192.168.101.117       HTTPS Data Exfiltration | BotNet Beaconing
+  [HIGH  ] 192.168.101.188       HTTPS Data Exfiltration | BotNet Beaconing
   [HIGH  ] 192.168.101.201       DNS Anomalies | BotNet Beaconing
   [MEDIUM] 188.83.72.32          External Automation
   [MEDIUM] 188.83.72.46          External Automation
@@ -314,14 +339,14 @@
   [MEDIUM] 192.168.101.14        HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.26        HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.68        New Destination IPs / ASNs
+  [MEDIUM] 192.168.101.78        HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.93        New Source IPs
-  [MEDIUM] 192.168.101.117       BotNet Beaconing
+  [MEDIUM] 192.168.101.128       HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.138       New Destination IPs / ASNs
   [MEDIUM] 192.168.101.148       DNS Anomalies
   [MEDIUM] 192.168.101.157       BotNet Beaconing
   [MEDIUM] 192.168.101.186       New Destination IPs / ASNs
   [MEDIUM] 192.168.101.187       HTTPS Data Exfiltration
-  [MEDIUM] 192.168.101.188       BotNet Beaconing
   [MEDIUM] 192.168.101.197       HTTPS Data Exfiltration
   [MEDIUM] 192.168.101.208       HTTPS Data Exfiltration
 
@@ -344,6 +369,10 @@
     → Alarm UEBA 192.168.101.26
     → Alarm UEBA 192.168.101.197
     → Alarm UEBA 192.168.101.207
+    → Alarm UEBA 192.168.101.188
+    → Alarm UEBA 192.168.101.78
+    → Alarm UEBA 192.168.101.128
+    → Alarm UEBA 192.168.101.117
     → Alarm UEBA 192.168.101.125
     → Alarm UEBA 192.168.101.36
     → Alarm UEBA 192.168.101.72
@@ -354,7 +383,5 @@
     → Alarm UEBA 192.168.101.201
     → Alarm UEBA 192.168.101.23
     → Alarm UEBA 192.168.101.41
-    → Alarm UEBA 192.168.101.117
     → Alarm UEBA 192.168.101.157
-    → Alarm UEBA 192.168.101.188
 

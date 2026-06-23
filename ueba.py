@@ -61,12 +61,22 @@ SIGMA      = 3
 WAZUH_IP   = "172.100.0.12"
 WAZUH_PORT = 514
 
+# Beaconing regularisation guard: minimum ratio of (train interval std) /
+# (test interval std) required to confirm a genuine behavioural change.
+# Derived from the observed gap between confirmed beacons (≥1.84×) and the
+# highest false-positive (.160 at 1.17×); 1.5 sits cleanly in the middle.
+MIN_HTTPS_REGULARIZATION = 1.5
+
+# Geo: new-country flows must represent at least 1% of the IP's total test
+# traffic to distinguish deliberate exfiltration from CDN edge rotation.
+GEO_MIN_PROPORTION = 0.01
+
 # ── Step 1: Baselines ──────────────────────────────────────────────────────────
 
 def compute_baselines() -> dict:
     b = {}
 
-    # HTTPS upload volume (Step 3)
+    # HTTPS upload volume + ratio (Step 3)
     https = int_train[int_train['port'] == 443]
     https_per_ip = https.groupby('src_ip').agg(
         total_up   = ('up_bytes', 'sum'),
@@ -74,11 +84,15 @@ def compute_baselines() -> dict:
     )
     b['https_up_mean'] = https_per_ip['total_up'].mean()
     b['https_up_std']  = https_per_ip['total_up'].std()
+    https_ratio = https_per_ip['total_down'] / https_per_ip['total_up']
+    b['https_ratio_mean'] = https_ratio.mean()
+    b['https_ratio_std']  = https_ratio.std()
 
     # HTTPS destination split: internal server vs external (characterisation only)
     INTERNAL_HTTPS_SERVER = (
         https[https['dst_ip'].apply(is_private)]['dst_ip'].mode()[0]
     )
+    b['internal_https_server'] = INTERNAL_HTTPS_SERVER
     for label, subset in [('int', https[https['dst_ip'] == INTERNAL_HTTPS_SERVER]),
                           ('ext', https[https['dst_ip'] != INTERNAL_HTTPS_SERVER])]:
         per_ip = subset.groupby('src_ip').agg(
@@ -105,6 +119,10 @@ def compute_baselines() -> dict:
     b['countries_per_ip']  = pub.groupby('src_ip')['country'].apply(set).to_dict()
     b['global_train_asns'] = set(pub['asn'].dropna().unique())
 
+    # Step 4b: minimum flows to a new ASN — p10 of per-(IP, ASN) flow counts in training.
+    ip_asn_counts = pub.groupby(['src_ip', 'asn']).size()
+    b['new_asn_min_flows'] = int(ip_asn_counts.quantile(0.10))
+
     # Geo intensity floor: p10 of per-(IP,country) flow counts in training.
     # Separates CDN rotation noise (1–3 flows) from sustained deliberate traffic.
     ip_country_counts = pub.groupby(['src_ip', 'country']).size()
@@ -120,6 +138,10 @@ def compute_baselines() -> dict:
     # Global set of internal destination IPs seen in training (Step 4b)
     priv = int_train[int_train['dst_ip'].apply(is_private)]
     b['global_train_internal_dsts'] = set(priv['dst_ip'].unique())
+
+    # Step 4b: minimum flows to a new internal dst — p10 of per-(IP, dst_ip) flow counts in training.
+    ip_int_dst_counts = priv.groupby(['src_ip', 'dst_ip']).size()
+    b['new_int_min_flows'] = int(ip_int_dst_counts.quantile(0.10))
 
     # External destination fan-out: unique external dst_ips per src_ip (Step 4c)
     ext_fan = pub.groupby('src_ip')['dst_ip'].nunique()
@@ -234,25 +256,39 @@ def detect_external_automation(baselines: dict) -> list[dict]:
 # ── Step 3: HTTPS data exfiltration ───────────────────────────────────────────
 
 def detect_https_exfiltration(baselines: dict) -> list[dict]:
-    mean      = baselines['https_up_mean']
-    std       = baselines['https_up_std']
-    threshold = mean + SIGMA * std
+    vol_mean      = baselines['https_up_mean']
+    vol_std       = baselines['https_up_std']
+    vol_threshold = vol_mean + SIGMA * vol_std
+    ratio_mean    = baselines['https_ratio_mean']
+    ratio_std     = baselines['https_ratio_std']
+    ratio_low     = ratio_mean - SIGMA * ratio_std
 
     per_ip = int_test[int_test['port'] == 443].groupby('src_ip').agg(
-        total_up = ('up_bytes', 'sum'),
-    )
+        total_up   = ('up_bytes', 'sum'),
+        total_down = ('down_bytes', 'sum'),
+    ).assign(ratio=lambda d: d['total_down'] / d['total_up'])
 
     alerts = []
-    for ip, row in per_ip[per_ip['total_up'] > threshold].iterrows():
+    for ip, row in per_ip.iterrows():
+        vol_flag   = row['total_up'] > vol_threshold
+        ratio_flag = row['ratio'] < ratio_low
+        if not (vol_flag or ratio_flag):
+            continue
         upload_mb = row['total_up'] / 1e6
-        deviation = (row['total_up'] - mean) / std
+        reasons   = []
+        if vol_flag:
+            dev = (row['total_up'] - vol_mean) / vol_std
+            reasons.append(f"uploaded {upload_mb:.0f} MB — {dev:.0f}σ above mean (threshold: {vol_threshold/1e6:.0f} MB)")
+        if ratio_flag:
+            dev = (ratio_mean - row['ratio']) / ratio_std
+            reasons.append(f"down/up ratio={row['ratio']:.2f} ({dev:.1f}σ below baseline {ratio_mean:.2f}±{ratio_std:.2f}; threshold {ratio_low:.2f})")
         alerts.append({
             'rule'  : 'HTTPS Data Exfiltration',
             'ip'    : ip,
             'threat': 'Data exfiltration over HTTPS',
-            'why'   : f"Uploaded {upload_mb:.0f} MB — {deviation:.0f}σ above mean (threshold: {threshold/1e6:.0f} MB)",
+            'why'   : '; '.join(reasons),
         })
-    return sorted(alerts, key=lambda a: float(a['why'].split()[1]), reverse=True)
+    return sorted(alerts, key=lambda a: per_ip.loc[a['ip'], 'total_up'], reverse=True)
 
 
 # ── Step 4: New country destinations ──────────────────────────────────────────
@@ -291,14 +327,12 @@ def detect_new_geo_destinations(baselines: dict) -> list[dict]:
 
 # ── Step 4b: New destination IPs and ASNs ─────────────────────────────────────
 
-MIN_NEW_EXTERNAL_FLOWS = 10
-MIN_NEW_INTERNAL_FLOWS = 5
-
 def detect_new_destinations(baselines: dict) -> list[dict]:
     alerts = []
 
     # Sub-rule 1: new external ASN not seen by ANY client in training
     global_train_asns = baselines['global_train_asns']
+    min_ext_flows     = baselines['new_asn_min_flows']
     pub_test = int_test[~int_test['dst_ip'].apply(is_private)].copy()
     pub_test['asn'] = pub_test['dst_ip'].apply(get_asn)
 
@@ -307,7 +341,7 @@ def detect_new_destinations(baselines: dict) -> list[dict]:
         if not new_asns:
             continue
         flows = len(grp[grp['asn'].isin(new_asns)])
-        if flows < MIN_NEW_EXTERNAL_FLOWS:
+        if flows < min_ext_flows:
             continue
         sample = ', '.join(sorted(new_asns)[:3]) + ('...' if len(new_asns) > 3 else '')
         alerts.append({
@@ -319,6 +353,7 @@ def detect_new_destinations(baselines: dict) -> list[dict]:
 
     # Sub-rule 2: new internal destination IP not seen in any training flow
     global_train_internal = baselines['global_train_internal_dsts']
+    min_int_flows         = baselines['new_int_min_flows']
     priv_test = int_test[int_test['dst_ip'].apply(is_private)].copy()
 
     for ip, grp in priv_test.groupby('src_ip'):
@@ -326,7 +361,7 @@ def detect_new_destinations(baselines: dict) -> list[dict]:
         if not new_dsts:
             continue
         flows = len(grp[grp['dst_ip'].isin(new_dsts)])
-        if flows < MIN_NEW_INTERNAL_FLOWS:
+        if flows < min_int_flows:
             continue
         alerts.append({
             'rule'  : 'New Internal Destination',
@@ -389,16 +424,6 @@ def detect_dns_anomalies(baselines: dict) -> list[dict]:
 
 # ── Step 6: BotNet beaconing ──────────────────────────────────────────────────
 
-# Minimum ratio of (training interval std) / (test interval std) to confirm
-# that the device became genuinely more regular in the test period, not just
-# that it naturally has tight intervals. Derived from analysis: confirmed
-# beacons show ≥1.84×; false-positive .160 shows only 1.17×.
-MIN_HTTPS_REGULARIZATION = 1.5
-
-# Geo: new-country flows must represent at least 1% of the IP's total test traffic.
-# Prevents CDN rotation artifacts (a few flows to an unknown country) from firing.
-GEO_MIN_PROPORTION = 0.01
-
 def detect_botnet_beaconing(baselines: dict) -> list[dict]:
     https_threshold       = baselines['https_interval_std_p05']
     dns_threshold         = baselines['dns_interval_std_p05']
@@ -423,7 +448,7 @@ def detect_botnet_beaconing(baselines: dict) -> list[dict]:
 
         if https_std is not None and https_std < https_threshold:
             train_std = https_train_std_by_ip.get(ip)
-            regularization = (train_std / https_std) if train_std else 0
+            regularization = (train_std / https_std) if train_std is not None else 0
             if regularization >= MIN_HTTPS_REGULARIZATION:
                 protocol  = 'HTTPS'
                 obs_std   = https_std
@@ -486,7 +511,10 @@ def main() -> None:
     print(f"    DNS beaconing p05       : {b['dns_interval_std_p05']/100:.2f}s")
     print(f"    External ratio window   : [{b['ext_ratio_mean']-SIGMA*b['ext_ratio_std']:.4f}, {b['ext_ratio_mean']+SIGMA*b['ext_ratio_std']:.4f}]")
     print(f"    Internal DNS servers    : {b['dns_internal_servers']}")
+    print(f"    HTTPS ratio threshold   : {b['https_ratio_mean'] - SIGMA*b['https_ratio_std']:.4f}  (mean-{SIGMA}σ = {b['https_ratio_mean']:.4f}±{b['https_ratio_std']:.4f})")
     print(f"    Geo min intensity flows : {b['geo_min_intensity_flows']} flows  (p10 of per-IP/country flow counts)")
+    print(f"    New ASN min flows       : {b['new_asn_min_flows']} flows  (p10 of per-IP/ASN flow counts)")
+    print(f"    New internal min flows  : {b['new_int_min_flows']} flows  (p10 of per-IP/internal-dst flow counts)")
     print(f"    External fan-out threshold : {b['ext_fan_mean'] + SIGMA*b['ext_fan_std']:.0f} unique dst IPs  (mean+{SIGMA}σ)")
     print(f"    External automation threshold : {b['ext_interval_std_min']/100:.2f}s  (training minimum — no training client was ever below this)")
 
@@ -503,7 +531,8 @@ def main() -> None:
 
     print(f"\n[*] Network characterisation — internal HTTPS destination split:")
     print(f"    {'Destination':<26}  {'Flows':>8}  {'Up/client':>10}  {'Down/client':>12}  {'Ratio mean':>11}  {'Ratio std':>10}")
-    print(f"    {'Internal server (.240)':<26}  {b['https_int_flows']:>8,}  "
+    _srv_last = b['internal_https_server'].split('.')[-1]
+    print(f"    {f'Internal server (.{_srv_last})':<26}  {b['https_int_flows']:>8,}  "
           f"{b['https_int_up_mean']/1e6:>9.1f}MB  {b['https_int_down_mean']/1e6:>11.1f}MB  "
           f"{b['https_int_ratio_mean']:>11.4f}  {b['https_int_ratio_std']:>10.4f}")
     print(f"    {'External HTTPS servers':<26}  {b['https_ext_flows']:>8,}  "
@@ -543,11 +572,11 @@ def main() -> None:
     print(f"\n{'═'*60}")
     print(f"  FINAL CONSOLIDATED REPORT")
     print(f"{'═'*60}")
-    internal = [ip for ip in ip_rules if ip.startswith('192.168')]
-    external = [ip for ip in ip_rules if not ip.startswith('192.168')]
+    internal = [ip for ip in ip_rules if is_private(ip)]
+    external = [ip for ip in ip_rules if not is_private(ip)]
     print(f"  Total unique anomalous IPs : {len(ip_rules)}")
-    print(f"  Internal (192.168.101.x)   : {len(internal)}")
-    print(f"  External (188.83.72.x)     : {len(external)}")
+    print(f"  Internal                   : {len(internal)}")
+    print(f"  External                   : {len(external)}")
     print()
 
     sorted_ips = sorted(ip_rules.items(), key=lambda x: (-len(x[1]), ipaddress.IPv4Address(x[0])))
