@@ -1,0 +1,372 @@
+[*] Loading datasets...
+    internal_train : (963503, 7)
+    internal_test  : (1125194, 7)
+    external_train : (685960, 7)
+    external_test  : (656447, 7)
+
+[*] Computing baselines from training data...
+    HTTPS upload threshold  : 122.1 MB  (mean+3σ)
+    DNS flow threshold      : 1468 flows  (mean+3σ)
+    HTTPS beaconing p05     : 19.25s
+    DNS beaconing p05       : 63.72s
+    External ratio window   : [8.3488, 8.6607]
+    Internal DNS servers    : {'192.168.110.222', '192.168.110.230'}
+    HTTPS ratio threshold   : 8.5334  (mean-3σ = 9.2352±0.2339)
+    Geo min intensity flows : 3 flows  (p10 of per-IP/country flow counts)
+    New ASN min flows       : 5 flows  (p10 of per-IP/ASN flow counts)
+    New internal min flows  : 149 flows  (p10 of per-IP/internal-dst flow counts)
+    External fan-out threshold : 268 unique dst IPs  (mean+3σ)
+    External automation threshold : 4.14s  (training minimum — no training client was ever below this)
+
+[*] Network characterisation — internal destination countries (36 total):
+    PT     254,803 flows    2895.7 MB  (37.5%)
+    US     180,203 flows    2052.6 MB  (26.5%)
+    CA     100,397 flows    1143.8 MB  (14.8%)
+    FR      71,362 flows     813.2 MB  (10.5%)
+    NL      39,070 flows     442.8 MB  (5.8%)
+    GB       8,924 flows     101.3 MB  (1.3%)
+    ES       8,158 flows      91.9 MB  (1.2%)
+    IE       7,170 flows      81.4 MB  (1.1%)
+    BR       6,400 flows      72.8 MB  (0.9%)
+    IN         480 flows       5.4 MB  (0.1%)
+    ...      2,442 flows  (26 other countries)
+
+[*] Network characterisation — internal HTTPS destination split:
+    Destination                    Flows   Up/client   Down/client   Ratio mean   Ratio std
+    Internal server (.238)       169,154        9.9MB         91.4MB       9.2936      0.5890
+    External HTTPS servers       679,409       39.6MB        365.5MB       9.2188      0.2597
+
+[*] Network characterisation — external client inter-flow intervals:
+    Mean   : 7.72 s
+    Median : 1.04 s
+    Std    : 111.08 s
+    p90    : 1.91 s
+    p95    : 34.70 s
+
+════════════════════════════════════════════════════════════
+  Step 1 — New Source IPs
+════════════════════════════════════════════════════════════
+  [1] Rule   : New Source IP
+       IP     : 192.168.110.24
+       Threat : Device with no training baseline — possible rogue endpoint or network implant
+       Why    : 2134 flows (1872 HTTPS, 262 DNS), HTTPS upload: 21.6 MB, unique ext IPs: 79 — all metrics sub-threshold, absent entire training period
+
+  [2] Rule   : New Source IP
+       IP     : 192.168.110.36
+       Threat : Device with no training baseline — possible rogue endpoint or network implant
+       Why    : 1714 flows (1502 HTTPS, 212 DNS), HTTPS upload: 17.3 MB, unique ext IPs: 63 — all metrics sub-threshold, absent entire training period
+
+  [3] Rule   : New Source IP
+       IP     : 192.168.110.70
+       Threat : Device with no training baseline — possible rogue endpoint or network implant
+       Why    : 6830 flows (5991 HTTPS, 839 DNS), HTTPS upload: 68.6 MB, unique ext IPs: 151 — all metrics sub-threshold, absent entire training period
+
+  [4] Rule   : New Source IP
+       IP     : 192.168.110.77
+       Threat : Device with no training baseline — possible rogue endpoint or network implant
+       Why    : 5953 flows (5248 HTTPS, 705 DNS), HTTPS upload: 59.6 MB, unique ext IPs: 132 — all metrics sub-threshold, absent entire training period
+
+  [5] Rule   : New Source IP
+       IP     : 192.168.110.178
+       Threat : Device with no training baseline — possible rogue endpoint or network implant
+       Why    : 5100 flows (4552 HTTPS, 548 DNS), HTTPS upload: 52.5 MB, unique ext IPs: 131 — all metrics sub-threshold, absent entire training period
+
+
+════════════════════════════════════════════════════════════
+  Step 2 — Anomalous External Users
+════════════════════════════════════════════════════════════
+  [1] Rule   : Anomalous External User
+       IP     : 188.83.81.53
+       Threat : Unusual upload/download ratio — possible exfiltration or compromise
+       Why    : Down/up ratio=8.7358 (4.4σ from baseline 8.5048±0.0520; window [8.3488, 8.6607])
+
+
+════════════════════════════════════════════════════════════
+  Step 2b — External Automation
+════════════════════════════════════════════════════════════
+  [1] Rule   : External Automation
+       IP     : 188.83.81.31
+       Threat : Non-human access pattern — possible bot, scraper, or automated attack tool
+       Why    : Inter-flow interval std=2.00s (threshold 4.14s — training minimum) — regularity below any training client, median interval=8.00s
+
+  [2] Rule   : External Automation
+       IP     : 188.83.81.34
+       Threat : Non-human access pattern — possible bot, scraper, or automated attack tool
+       Why    : Inter-flow interval std=2.01s (threshold 4.14s — training minimum) — regularity below any training client, median interval=8.00s
+
+  [3] Rule   : External Automation
+       IP     : 188.83.81.131
+       Threat : Non-human access pattern — possible bot, scraper, or automated attack tool
+       Why    : Inter-flow interval std=2.03s (threshold 4.14s — training minimum) — regularity below any training client, median interval=8.00s
+
+  [4] Rule   : External Automation
+       IP     : 188.83.81.197
+       Threat : Non-human access pattern — possible bot, scraper, or automated attack tool
+       Why    : Inter-flow interval std=2.04s (threshold 4.14s — training minimum) — regularity below any training client, median interval=8.00s
+
+
+════════════════════════════════════════════════════════════
+  Step 3 — HTTPS Data Exfiltration
+════════════════════════════════════════════════════════════
+  [1] Rule   : HTTPS Data Exfiltration
+       IP     : 192.168.110.23
+       Threat : Data exfiltration over HTTPS
+       Why    : uploaded 5858 MB — 240σ above mean (threshold: 122 MB); down/up ratio=0.11 (39.0σ below baseline 9.24±0.23; threshold 8.53)
+
+  [2] Rule   : HTTPS Data Exfiltration
+       IP     : 192.168.110.72
+       Threat : Data exfiltration over HTTPS
+       Why    : uploaded 5466 MB — 224σ above mean (threshold: 122 MB); down/up ratio=0.10 (39.1σ below baseline 9.24±0.23; threshold 8.53)
+
+  [3] Rule   : HTTPS Data Exfiltration
+       IP     : 192.168.110.189
+       Threat : Data exfiltration over HTTPS
+       Why    : uploaded 254 MB — 8σ above mean (threshold: 122 MB); down/up ratio=2.25 (29.9σ below baseline 9.24±0.23; threshold 8.53)
+
+  [4] Rule   : HTTPS Data Exfiltration
+       IP     : 192.168.110.176
+       Threat : Data exfiltration over HTTPS
+       Why    : down/up ratio=1.82 (31.7σ below baseline 9.24±0.23; threshold 8.53)
+
+
+════════════════════════════════════════════════════════════
+  Step 4 — New Country Destinations
+════════════════════════════════════════════════════════════
+  [1] Rule   : New Country Destination
+       IP     : 192.168.110.116
+       Threat : Traffic to country not seen during training
+       Why    : 658 flows to new country/ies: BA, BD, CY, FI, GE, IM, IR, KZ, LV, PL, RU, TR, UA, VN (13.6% of total traffic)
+
+  [2] Rule   : New Country Destination
+       IP     : 192.168.110.59
+       Threat : Traffic to country not seen during training
+       Why    : 810 flows to new country/ies: AZ, BA, BD, BY, DK, FI, IR, KW, KZ, MD, PL, RU, TR, UA, UZ, VN (17.4% of total traffic)
+
+
+════════════════════════════════════════════════════════════
+  Step 4b — New Destination IPs / ASNs
+════════════════════════════════════════════════════════════
+  [1] Rule   : New Internal Destination
+       IP     : 192.168.110.57
+       Threat : Communication to internal host never seen in training — possible lateral movement
+       Why    : 361 flows to new internal IP(s): 192.168.110.152, 192.168.110.96
+
+  [2] Rule   : New External Destination (New ASN)
+       IP     : 192.168.110.59
+       Threat : Communication to infrastructure not seen in any training traffic
+       Why    : 1003 flows to 294 new-to-network ASN(s): "A-Siti" Limited Liability Company, "Cloud Technologies" LLC trading as Cloud.ru, "Domain names registrar REG.RU", Ltd...
+
+  [3] Rule   : New Internal Destination
+       IP     : 192.168.110.96
+       Threat : Communication to internal host never seen in training — possible lateral movement
+       Why    : 239 flows to new internal IP(s): 192.168.110.152, 192.168.110.57
+
+  [4] Rule   : New External Destination (New ASN)
+       IP     : 192.168.110.116
+       Threat : Communication to infrastructure not seen in any training traffic
+       Why    : 725 flows to 214 new-to-network ASN(s): "C.S.T". Ltd., "Cloud Technologies" LLC trading as Cloud.ru, "Domain names registrar REG.RU", Ltd...
+
+  [5] Rule   : New Internal Destination
+       IP     : 192.168.110.152
+       Threat : Communication to internal host never seen in training — possible lateral movement
+       Why    : 255 flows to new internal IP(s): 192.168.110.57, 192.168.110.96
+
+
+════════════════════════════════════════════════════════════
+  Step 4c — External Destination Fan-out
+════════════════════════════════════════════════════════════
+  [1] Rule   : External Destination Fan-out
+       IP     : 192.168.110.59
+       Threat : Anomalous number of unique external destinations — possible C2 sweep or reconnaissance
+       Why    : 577 unique external IPs (9.6σ above mean 127; threshold 268)
+
+  [2] Rule   : External Destination Fan-out
+       IP     : 192.168.110.116
+       Threat : Anomalous number of unique external destinations — possible C2 sweep or reconnaissance
+       Why    : 461 unique external IPs (7.1σ above mean 127; threshold 268)
+
+
+════════════════════════════════════════════════════════════
+  Step 5 — DNS Anomalies
+════════════════════════════════════════════════════════════
+  [1] Rule   : DNS Volume Anomaly
+       IP     : 192.168.110.122
+       Threat : DNS-based C&C beaconing or DNS tunneling
+       Why    : 1,742 DNS queries (3.9σ above mean 589), median interval=0.05s
+
+  [2] Rule   : DNS Volume Anomaly
+       IP     : 192.168.110.129
+       Threat : DNS-based C&C beaconing or DNS tunneling
+       Why    : 48,728 DNS queries (164.4σ above mean 589), median interval=0.05s
+
+  [3] Rule   : DNS Volume Anomaly
+       IP     : 192.168.110.15
+       Threat : DNS-based C&C beaconing or DNS tunneling
+       Why    : 1,729 DNS queries (3.9σ above mean 589), median interval=0.05s
+
+  [4] Rule   : DNS Volume Anomaly
+       IP     : 192.168.110.204
+       Threat : DNS-based C&C beaconing or DNS tunneling
+       Why    : 60,904 DNS queries (206.0σ above mean 589), median interval=0.05s
+
+  [5] Rule   : DNS Volume Anomaly
+       IP     : 192.168.110.41
+       Threat : DNS-based C&C beaconing or DNS tunneling
+       Why    : 59,470 DNS queries (201.1σ above mean 589), median interval=0.05s
+
+
+════════════════════════════════════════════════════════════
+  Step 6 — BotNet Beaconing
+════════════════════════════════════════════════════════════
+  [1] Rule   : BotNet Beaconing
+       IP     : 192.168.110.116
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=17.10s (threshold 19.25s), median=0.99s
+
+  [2] Rule   : BotNet Beaconing
+       IP     : 192.168.110.118
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=19.14s (threshold 19.25s), median=1.03s
+
+  [3] Rule   : BotNet Beaconing
+       IP     : 192.168.110.129
+       Threat : Botnet C&C — automated DNS beaconing
+       Why    : DNS interval std=3.54s (threshold 63.72s), median=0.05s
+
+  [4] Rule   : BotNet Beaconing
+       IP     : 192.168.110.131
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=18.78s (threshold 19.25s), median=1.04s
+
+  [5] Rule   : BotNet Beaconing
+       IP     : 192.168.110.143
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=18.22s (threshold 19.25s), median=0.95s
+
+  [6] Rule   : BotNet Beaconing
+       IP     : 192.168.110.144
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=14.85s (threshold 19.25s), median=0.98s
+
+  [7] Rule   : BotNet Beaconing
+       IP     : 192.168.110.15
+       Threat : Botnet C&C — automated DNS beaconing
+       Why    : DNS interval std=38.14s (threshold 63.72s), median=0.05s
+
+  [8] Rule   : BotNet Beaconing
+       IP     : 192.168.110.162
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=18.78s (threshold 19.25s), median=1.04s
+
+  [9] Rule   : BotNet Beaconing
+       IP     : 192.168.110.17
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=17.09s (threshold 19.25s), median=1.05s
+
+  [10] Rule   : BotNet Beaconing
+       IP     : 192.168.110.173
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=18.54s (threshold 19.25s), median=1.04s
+
+  [11] Rule   : BotNet Beaconing
+       IP     : 192.168.110.19
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=18.86s (threshold 19.25s), median=1.04s
+
+  [12] Rule   : BotNet Beaconing
+       IP     : 192.168.110.204
+       Threat : Botnet C&C — automated DNS beaconing
+       Why    : DNS interval std=8.80s (threshold 63.72s), median=0.05s
+
+  [13] Rule   : BotNet Beaconing
+       IP     : 192.168.110.41
+       Threat : Botnet C&C — automated DNS beaconing
+       Why    : DNS interval std=4.44s (threshold 63.72s), median=0.05s
+
+  [14] Rule   : BotNet Beaconing
+       IP     : 192.168.110.59
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=16.33s (threshold 19.25s), median=1.01s
+
+  [15] Rule   : BotNet Beaconing
+       IP     : 192.168.110.93
+       Threat : Botnet C&C — automated HTTPS beaconing
+       Why    : HTTPS interval std=18.83s (threshold 19.25s), median=1.02s
+
+
+════════════════════════════════════════════════════════════
+  FINAL CONSOLIDATED REPORT
+════════════════════════════════════════════════════════════
+  Total unique anomalous IPs : 33
+  Internal                   : 28
+  External                   : 5
+
+  [HIGH  ] 192.168.110.59        New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out | BotNet Beaconing
+  [HIGH  ] 192.168.110.116       New Country Destinations | New Destination IPs / ASNs | External Destination Fan-out | BotNet Beaconing
+  [HIGH  ] 192.168.110.15        DNS Anomalies | BotNet Beaconing
+  [HIGH  ] 192.168.110.41        DNS Anomalies | BotNet Beaconing
+  [HIGH  ] 192.168.110.129       DNS Anomalies | BotNet Beaconing
+  [HIGH  ] 192.168.110.204       DNS Anomalies | BotNet Beaconing
+  [MEDIUM] 188.83.81.31          External Automation
+  [MEDIUM] 188.83.81.34          External Automation
+  [MEDIUM] 188.83.81.53          Anomalous External Users
+  [MEDIUM] 188.83.81.131         External Automation
+  [MEDIUM] 188.83.81.197         External Automation
+  [MEDIUM] 192.168.110.17        BotNet Beaconing
+  [MEDIUM] 192.168.110.19        BotNet Beaconing
+  [MEDIUM] 192.168.110.23        HTTPS Data Exfiltration
+  [MEDIUM] 192.168.110.24        New Source IPs
+  [MEDIUM] 192.168.110.36        New Source IPs
+  [MEDIUM] 192.168.110.57        New Destination IPs / ASNs
+  [MEDIUM] 192.168.110.70        New Source IPs
+  [MEDIUM] 192.168.110.72        HTTPS Data Exfiltration
+  [MEDIUM] 192.168.110.77        New Source IPs
+  [MEDIUM] 192.168.110.93        BotNet Beaconing
+  [MEDIUM] 192.168.110.96        New Destination IPs / ASNs
+  [MEDIUM] 192.168.110.118       BotNet Beaconing
+  [MEDIUM] 192.168.110.122       DNS Anomalies
+  [MEDIUM] 192.168.110.131       BotNet Beaconing
+  [MEDIUM] 192.168.110.143       BotNet Beaconing
+  [MEDIUM] 192.168.110.144       BotNet Beaconing
+  [MEDIUM] 192.168.110.152       New Destination IPs / ASNs
+  [MEDIUM] 192.168.110.162       BotNet Beaconing
+  [MEDIUM] 192.168.110.173       BotNet Beaconing
+  [MEDIUM] 192.168.110.176       HTTPS Data Exfiltration
+  [MEDIUM] 192.168.110.178       New Source IPs
+  [MEDIUM] 192.168.110.189       HTTPS Data Exfiltration
+
+[*] Sending UEBA alerts to Wazuh (172.100.0.12:514)...
+    → Alarm UEBA 192.168.110.24
+    → Alarm UEBA 192.168.110.36
+    → Alarm UEBA 192.168.110.70
+    → Alarm UEBA 192.168.110.77
+    → Alarm UEBA 192.168.110.178
+    → Alarm UEBA 188.83.81.53
+    → Alarm UEBA 188.83.81.31
+    → Alarm UEBA 188.83.81.34
+    → Alarm UEBA 188.83.81.131
+    → Alarm UEBA 188.83.81.197
+    → Alarm UEBA 192.168.110.23
+    → Alarm UEBA 192.168.110.72
+    → Alarm UEBA 192.168.110.189
+    → Alarm UEBA 192.168.110.176
+    → Alarm UEBA 192.168.110.116
+    → Alarm UEBA 192.168.110.59
+    → Alarm UEBA 192.168.110.57
+    → Alarm UEBA 192.168.110.96
+    → Alarm UEBA 192.168.110.152
+    → Alarm UEBA 192.168.110.122
+    → Alarm UEBA 192.168.110.129
+    → Alarm UEBA 192.168.110.15
+    → Alarm UEBA 192.168.110.204
+    → Alarm UEBA 192.168.110.41
+    → Alarm UEBA 192.168.110.118
+    → Alarm UEBA 192.168.110.131
+    → Alarm UEBA 192.168.110.143
+    → Alarm UEBA 192.168.110.144
+    → Alarm UEBA 192.168.110.162
+    → Alarm UEBA 192.168.110.17
+    → Alarm UEBA 192.168.110.173
+    → Alarm UEBA 192.168.110.19
+    → Alarm UEBA 192.168.110.93
+

@@ -1,5 +1,6 @@
 # Ignore the dataset directory
 /dataset1
+/dataset10
 
 .claude
 /Wazuh
